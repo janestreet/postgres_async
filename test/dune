@@ -1,0 +1,2 @@
+(library (name postgres_async_tests) (libraries core async postgres_async)
+ (preprocess (pps ppx_jane)))
