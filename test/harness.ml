@@ -56,15 +56,35 @@ let create ?(extra_server_args=[]) () =
     Unix.mkdtemp (tempfiles_dir ^/ "postgres-datadir")
   in
   let get_postgres_output () = In_channel.read_all postgres_output_filename in
-  (* Ask the OS to assign us a temporary port. We're binding to 127.0.0.2, so that won't
-     conflict with postgres' bind to 127.0.0.1. *)
+  (* Ask the OS to assign us a temporary port. *)
   let temp_socket = Unix.socket ~domain:PF_INET ~kind:SOCK_STREAM ~protocol:0 in
-  Unix.bind temp_socket ~addr:(ADDR_INET (Unix.Inet_addr.of_string "127.0.0.2", 0));
+  Unix.bind temp_socket ~addr:(ADDR_INET (Unix.Inet_addr.of_string "0.0.0.0", 0));
   let port =
     match Unix.getsockname temp_socket with
     | ADDR_UNIX _ -> assert false
     | ADDR_INET (_, port) -> port
   in
+  (* Postgres binds with SO_REUSEADDR.
+
+     In order to allow postgres to use this port, we must set SO_REUSEADDR on
+     [temp_socket] too.
+
+     By binding the same port on [127.0.0.2] and _then_ switching REUSEADDR on
+     [temp_socket2] off, it will not be possible to bind to [0.0.0.0:port], since such
+     a bind will conflict with the [127.0.0.2:port] socket. In particular, another
+     instance of this test will not re-use the port. But also other processes asking for
+     [0.0.0.0:ephemeral] will not be given [port].
+
+     A process asking for [127.0.0.1:ephemeral] without REUSEADDR set be handed our port.
+
+     A process asking for an ephemeral port on [127.0.0.1] with REUSEADDR set could
+     possibly be handed our port. It's very unlikely that any process actually attempts
+     this. *)
+  let temp_socket2 = Unix.socket ~domain:PF_INET ~kind:SOCK_STREAM ~protocol:0 in
+  Unix.setsockopt temp_socket SO_REUSEADDR true;
+  Unix.setsockopt temp_socket2 SO_REUSEADDR true;
+  Unix.bind temp_socket2 ~addr:(ADDR_INET (Unix.Inet_addr.of_string "127.0.0.2", port));
+  Unix.setsockopt temp_socket2 SO_REUSEADDR false;
   let initdb =
     let prog = force postgres_bins ^/ "initdb" in
     fork_redirect_exec

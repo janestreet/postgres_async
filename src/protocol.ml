@@ -1,4 +1,5 @@
 open Core
+open Poly
 
 module Array = struct
   include Array
