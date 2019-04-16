@@ -1,5 +1,5 @@
 open Core
-open Poly
+open Int.Replace_polymorphic_compare
 
 module Array = struct
   include Array
@@ -405,7 +405,7 @@ module Backend = struct
   module Shared = struct
     let find_null_exn iobuf =
       let rec loop ~iobuf ~length ~pos =
-        if Iobuf.Peek.char iobuf ~pos = '\x00'
+        if Char.(=) (Iobuf.Peek.char iobuf ~pos) '\x00'
         then pos
         else if pos > length - 1
         then failwith "find_null_exn could not find \\x00"
@@ -417,7 +417,7 @@ module Backend = struct
       let len = find_null_exn iobuf in
       let res = Iobuf.Consume.string iobuf ~len:len ~str_pos:0 in
       let zero = Iobuf.Consume.char iobuf in
-      assert (zero = '\x00');
+      assert (Char.(=) zero '\x00');
       res
   end
 

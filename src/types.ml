@@ -1,4 +1,5 @@
 open Core
+open! Int.Replace_polymorphic_compare
 
 type backend_key =
   { pid : Pid.t
