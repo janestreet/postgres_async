@@ -109,9 +109,14 @@ module Backend : sig
     | RowDescription
   [@@deriving sexp, compare]
 
+  type focus_on_message_error =
+    | Unknown_message_type of char
+    | Iobuf_too_short
+    | Nonsense_message_length of int
+
   val focus_on_message
     :  ([> read], Iobuf.seek) Iobuf.t
-    -> (constructor, [ `Unknown_message_type of char | `Too_short ]) Result.t
+    -> (constructor, focus_on_message_error) Result.t
 
   module ErrorResponse : sig
     type t = Error.t

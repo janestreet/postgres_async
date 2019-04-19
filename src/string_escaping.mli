@@ -10,5 +10,9 @@ module Copy_in : sig
   val row_to_string : string option array -> string
 end
 
+module Listen : sig
+  val query : channel:string -> string
+end
+
 (** No [escape_value] function is provided, because so far parameters have
     sufficed for putting values into query strings. *)

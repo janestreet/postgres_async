@@ -73,3 +73,8 @@ module Copy_in = struct
     Bytes.set data (pos - 1) '\n';
     Bytes.unsafe_to_string ~no_mutation_while_string_reachable:data
 end
+
+module Listen = struct
+  let query ~channel =
+    sprintf !"LISTEN %{escape_identifier}" channel
+end

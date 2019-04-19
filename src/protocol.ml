@@ -27,6 +27,23 @@ module Frontend = struct
     let fill_null_terminated iobuf str =
       Iobuf.Fill.stringo iobuf str;
       Iobuf.Fill.char iobuf '\x00'
+
+    let int16_min = -32768
+    let int16_max = 32767
+    let int32_min = -2147483648
+    let int32_max = 2147483647
+    let () = assert (String.equal (Int.to_string int32_min) "-2147483648")
+    let () = assert (String.equal (Int.to_string int32_max) "2147483647")
+
+    let [@inline always] fill_int16_be iobuf value =
+      match int16_min <= value && value <= int16_max with
+      | true -> Iobuf.Fill.int16_be_trunc iobuf value
+      | false -> failwithf "int16 out of range: %i" value ()
+
+    let [@inline always] fill_int32_be iobuf value =
+      match int32_min <= value && value <= int32_max with
+      | true -> Iobuf.Fill.int32_be_trunc iobuf value
+      | false -> failwithf "int32 out of range: %i" value ()
   end
 
   module StartupMessage = struct
@@ -139,13 +156,13 @@ module Frontend = struct
       Iobuf.Fill.int16_be_trunc iobuf 1; (* 1 parameter format code *)
       Iobuf.Fill.int16_be_trunc iobuf 0; (* all parameters are text *)
       let num_parameters = Array.length t.parameters in
-      Iobuf.Fill.int16_be_trunc iobuf num_parameters;
+      Shared.fill_int16_be iobuf num_parameters;
       for idx = 0 to num_parameters - 1 do
         match t.parameters.(idx) with
         | None ->
           Iobuf.Fill.int32_be_trunc iobuf (-1)
         | Some str ->
-          Iobuf.Fill.int32_be_trunc iobuf (String.length str);
+          Shared.fill_int32_be iobuf (String.length str);
           Iobuf.Fill.stringo iobuf str
       done;
       Iobuf.Fill.int16_be_trunc iobuf 1; (* 1 result format code *)
@@ -181,7 +198,7 @@ module Frontend = struct
         | Unlimited -> 0
         | Limit n -> n
       in
-      Iobuf.Fill.int32_be_trunc iobuf limit
+      Shared.fill_int32_be iobuf limit
   end
 
   module Statement_or_portal_action = struct
@@ -296,7 +313,7 @@ module Frontend = struct
          | None -> ()
          | Some c -> Iobuf.Fill.char iobuf c);
         let { payload_length; value } = with_computed_length in
-        Iobuf.Fill.int32_be_trunc iobuf (payload_length + 4);
+        Shared.fill_int32_be iobuf (payload_length + 4);
         M.fill value iobuf;
         (match Iobuf.is_empty iobuf with
          | true -> ()
@@ -356,6 +373,11 @@ module Backend = struct
     | RowDescription
   [@@deriving sexp, compare]
 
+  type focus_on_message_error =
+    | Unknown_message_type of char
+    | Iobuf_too_short
+    | Nonsense_message_length of int
+
   let constructor_of_char =
     function
     | 'R' -> Ok AuthenticationRequest
@@ -381,18 +403,20 @@ module Backend = struct
     | 's' -> Ok PortalSuspended
     | 'Z' -> Ok ReadyForQuery
     | 'T' -> Ok RowDescription
-    | other -> Error (`Unknown_message_type other)
+    | other -> Error (Unknown_message_type other)
 
   let focus_on_message iobuf =
     let iobuf_length = Iobuf.length iobuf in
     if iobuf_length < 5
-    then Error `Too_short
+    then Error Iobuf_too_short
     else (
       let message_length =
         (Iobuf.Peek.int32_be iobuf ~pos:1) + 1
       in
       if iobuf_length < message_length
-      then Error `Too_short
+      then Error Iobuf_too_short
+      else if message_length < 5
+      then Error (Nonsense_message_length message_length)
       else (
         let char = Iobuf.Peek.char iobuf ~pos:0 in
         match constructor_of_char char with

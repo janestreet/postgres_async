@@ -6,10 +6,9 @@ module Notification_channel = Types.Notification_channel
 
 (* https://www.postgresql.org/docs/current/protocol.html *)
 
-(* The ivars here are filled whenever the state changes. *)
 type state =
-  | Open    of unit Ivar.t
-  | Closing of unit Ivar.t
+  | Open
+  | Closing
   | Failed  of Error.t
   | Closed_gracefully
 [@@deriving sexp_of]
@@ -25,12 +24,14 @@ type state =
    function), so that by reading the short [module T] we can be confident the
    whole module handles this correctly. *)
 module T : sig
-  type opaque
+  (* [opaque] makes [writer] and [state_changed] inaccessible outside of [T]. *)
+  type 'a opaque
 
   type t = private
-    { writer : opaque
+    { writer : Writer.t opaque
     ; reader : Reader.t
     ; mutable state : state
+    ; state_changed : (unit, read_write) Bvar.t opaque
     ; sequencer : unit Sequencer.t
     ; runtime_parameters : string String.Table.t
     ; notification_buses : (string -> unit, read_write) Bus.t Notification_channel.Table.t
@@ -61,18 +62,23 @@ module T : sig
   val bytes_pending_in_writer_buffer : t -> int
   val wait_for_writer_buffer_to_be_empty : t -> unit Deferred.t
 end = struct
-  type opaque = Writer.t
+  type 'a opaque = 'a
 
   type t =
     { writer : (Writer.t [@sexp.opaque])
     ; reader : (Reader.t [@sexp.opaque])
     ; mutable state : state
+    ; state_changed : (unit, read_write) Bvar.t
     ; sequencer : unit Sequencer.t
     ; runtime_parameters : string String.Table.t
     ; notification_buses : (string -> unit, read_write) Bus.t Notification_channel.Table.t
     ; backend_key : Types.backend_key Set_once.t
     }
   [@@deriving sexp_of]
+
+  let set_state t state =
+    t.state <- state;
+    Bvar.broadcast t.state_changed ()
 
   let cleanup_resources t =
     let%bind () = Writer.close t.writer ~force_close:Deferred.unit in
@@ -81,22 +87,17 @@ end = struct
     Hashtbl.clear t.runtime_parameters;
     return ()
 
-
   let failed t err =
     don't_wait_for (cleanup_resources t);
     match t.state with
     | Failed _ | Closed_gracefully -> ()
-    | Open signal ->
-      t.state <- Failed err;
-      Ivar.fill signal ()
-    | Closing signal ->
-      t.state <- Failed err;
-      Ivar.fill signal ()
+    | Open | Closing -> set_state t (Failed err)
 
   let create_internal reader writer =
     { reader
     ; writer
-    ; state = Open (Ivar.create ())
+    ; state = Open
+    ; state_changed = Bvar.create ()
     ; sequencer = Sequencer.create ~continue_on_error:true ()
     ; runtime_parameters = String.Table.create ()
     ; notification_buses = Notification_channel.Table.create ~size:1 ()
@@ -118,10 +119,9 @@ end = struct
 
   let start_close__gracefully_if_possible t =
     match t.state with
-    | Failed _ | Closed_gracefully | Closing _ -> ()
-    | Open left_open_state ->
-      Ivar.fill left_open_state ();
-      t.state <- Closing (Ivar.create ());
+    | Failed _ | Closed_gracefully | Closing -> ()
+    | Open ->
+      set_state t Closing;
       match Protocol.Frontend.Writer.terminate t.writer with
       | exception exn -> failed t (Error.of_exn exn)
       | () ->
@@ -133,14 +133,13 @@ end = struct
           | Ok `Closed_gracefully ->
             let%bind () = cleanup_resources t in
             match t.state with
-            | Open _ | Closed_gracefully -> assert false
+            | Open | Closed_gracefully -> assert false
             | Failed _ ->
               (* e.g., if the Writer had an asynchronous exn while the reader was being closed,
                  we might have called [failed t] and filled this ivar already. *)
               return ()
-            | Closing signal ->
-              Ivar.fill signal ();
-              t.state <- Closed_gracefully;
+            | Closing ->
+              set_state t Closed_gracefully;
               return ()
         )
 
@@ -148,8 +147,8 @@ end = struct
     match t.state with
     | Failed err -> return (Error err)
     | Closed_gracefully -> return (Ok ())
-    | Closing changed | Open changed ->
-      let%bind () = Ivar.read changed in
+    | Closing | Open ->
+      let%bind () = Bvar.wait t.state_changed in
       close_finished t
 
   let close t =
@@ -195,7 +194,14 @@ module Message_reading : sig
     | Protocol_error of Error.t
 
   (** [read_messages] and will handle and dispatch the three asynchronous
-      message types for you; you should never see them. *)
+      message types for you; you should never see them.
+
+      [handle_message] is given a message type constructor, and an iobuf windowed on the
+      payload of the message (that is, the message-type-specific bytes; the window does
+      not include the type or message length header, they have already been consumed).
+
+      [handle_message] must consume (as in [Iobuf.Consume]) all of the bytes of the
+      message. *)
   type 'a handle_message
     =  Protocol.Backend.constructor
     -> (read, Iobuf.seek) Iobuf.t
@@ -216,7 +222,18 @@ end = struct
     | Continue
     | Protocol_error of Error.t
 
-  let max_message_length = 1024 * 1024
+  let max_message_length =
+    let default = 1024 * 1024 in
+    lazy (
+      let override =
+        (* for emergencies, in case 10M is a terrible default (seems very unlikely) *)
+        let open Option.Let_syntax in
+        let%bind v = Unix.getenv "POSTGRES_ASYNC_OVERRIDE_MAX_MESSAGE_LENGTH" in
+        let%bind v = Option.try_with (fun () -> Int.of_string v) in
+        let%bind v = Option.some_if (v > 0) v in
+        Some v
+      in
+      Option.value override ~default)
 
   let handle_notice_response iobuf =
     match Protocol.Backend.NoticeResponse.consume iobuf with
@@ -255,20 +272,121 @@ end = struct
     -> (read, Iobuf.seek) Iobuf.t
     -> 'a handle_message_result
 
+  (* [Reader.read_one_iobuf_at_a_time] hands us 'chunks' to [handle_chunk]. A chunk is
+     an iobuf, where the window of the iobuf is set to the data that has been pulled from
+     the OS into the [Reader.t] but not yet consumed by the application. Said window
+     'chunk' contains messages, potentially a partial message at the end in case e.g.
+     the bytes of a message is split across two calls to the [read] syscall.
+
+     Suppose the server has send us three 5-byte messages, "AAAAA", "BBBBB" and "CCCCC".
+     Each message has a 5-byte header (containing its type and length), represented by
+     'h'. Suppose further that the OS handed us 23 bytes when [Reader.t] called [read].
+
+     {v
+        0 bytes   10 bytes  20 bytes
+        |         |         |
+        hhhhhAAAAAhhhhhBBBBBhhh
+       /--------window---------\
+     v}
+
+     We want to give each message to [handle_message], one at a time. So, first we must
+     move the window on the iobuf so that it contains precisely the first message's
+     payload, i.e., the bytes 'AAAAA', i.e., this iobuf but with the window set to [5,10).
+     [Protocol.Backend.focus_on_message] does this by consuming the header 'hhhhh' to
+     learn the type and length (thereby moving the window lo-bound up) and then resizing
+     it (moving the hi-bound down) like so:
+
+     {v
+        hhhhhAAAAAhhhhhBBBBBhhh
+            /-wdw-\
+     v}
+
+     Now we can call [handle_message] with this iobuf.
+
+     The contract we have with [handle_message] is that it will use calls to functions in
+     [Iobuf.Consume] to consume the bytes inside the window we set, that is, consume the
+     entire message. As it consumes bytes of the message, the window lo-bound is moved up,
+     so when it's done consuming the window is [10,10)
+
+     {v
+        hhhhhAAAAAhhhhhBBBBBhhh
+                 /\
+     v}
+
+     and then [bounded_flip_hi] sets the window to [10,23) (since we remembered '23' in
+     [chunk_hi_bound]).
+
+     {v
+        hhhhhAAAAAhhhhhBBBBBhhh
+                 /-----window--\
+     v}
+
+     then, we recurse (focus on [15,20), call [handle_message], etc.), and recurse again.
+
+     At this point, reading the 'message length' field tells us that we only have part of
+     'C' in our buffer (three out of 5+5 bytes). So, we return from [handle_chunk]. The
+     contract we have with [Reader.t] is that we will leave in the iobuf the data that we
+     did not consume. It looks at the iobuf window to understand what's left, keeps only
+     those three bytes of 'C' in its internal buffer, and uses [read] to refill the buffer
+     before calling us again; hopefully at that point we'll have the whole of message 'C'.
+
+     For this to work it is important that [handle_message] actually consumed the whole
+     message, and did not move the window hi-bound. We _could_ save those bounds and
+     forcibly restore them before doing the flip, however we prefer to instead just check
+     that [handle_message] did this because the functions that parse messages are written
+     to 'consume' them anyway, and checking that they actually did so is a good validation
+     that we correctly understand and are thinking about all fields in the postgres
+     protocol; not consuming all the bytes of the message indicates a potential parsing
+     bug. That's what [check_window_after_handle_message] does.
+
+     Note the check against [max_message_length]. Without it, if postgres told us that it
+     was sending us an extremely long message, we'd return from [handle_chunk] constantly
+     asking for refills, always thinking we needed more data and consuming all the RAM.
+     Instead, we will just bail out rather than asking for refills if a message gets too
+     long. The limit is arbitrary, but ought to be enough for anybody (with an environment
+     variable escape hatch if we turn out to be wrong). *)
+
+  let check_window_after_handle_message message_type iobuf ~message_hi_bound =
+    match
+      [%compare.equal: Iobuf.Hi_bound.t]
+        (Iobuf.Hi_bound.window iobuf)
+        message_hi_bound
+    with
+    | false ->
+      error_s
+        [%message
+          "handle_message moved the hi-bound!"
+            (message_type : Protocol.Backend.constructor)
+        ]
+    | true ->
+      match Iobuf.is_empty iobuf with
+      | false ->
+        error_s
+          [%message
+            "handle_message did not consume entire iobuf"
+              (message_type : Protocol.Backend.constructor)
+              ~bytes_remaining:(Iobuf.length iobuf : int)
+          ]
+      | true ->
+        Ok ()
+
   let handle_chunk t ~handle_message ~pushback =
     let stop_error sexp = return (`Stop (`Protocol_error (Error.create_s sexp))) in
     let rec loop iobuf =
-      let hi_bound = Iobuf.Hi_bound.window iobuf in
+      let chunk_hi_bound = Iobuf.Hi_bound.window iobuf in
       match Protocol.Backend.focus_on_message iobuf with
-      | Error `Too_short ->
-        if Iobuf.length iobuf > max_message_length
-        then stop_error [%message "Message too long" ~iobuf_length:(Iobuf.length iobuf : int)]
-        else (
-          let%bind () = pushback () in
-          return `Continue)
-      | Error (`Unknown_message_type other) ->
+      | Error Iobuf_too_short ->
+        (match Iobuf.length iobuf > force max_message_length with
+         | true -> stop_error [%message "Message too long" ~iobuf_length:(Iobuf.length iobuf : int)]
+         | false ->
+           let%bind () = pushback () in
+           return `Continue)
+      | Error (Nonsense_message_length v) ->
+        stop_error [%message "Nonsense message length in header" ~_:(v : int)]
+      | Error (Unknown_message_type other) ->
         stop_error [%message "Unrecognised message type character" (other : char)]
       | Ok message_type ->
+        let message_hi_bound = Iobuf.Hi_bound.window iobuf in
         let res =
           let iobuf = Iobuf.read_only iobuf in
           (* Notice Response and Parameter Status may happen at any time. *)
@@ -282,18 +400,11 @@ end = struct
           match res with
           | Protocol_error _ as res -> res
           | Stop _ | Continue as res ->
-            match Iobuf.is_empty iobuf with
-            | true -> res
-            | false ->
-              Protocol_error (Error.create_s (
-                [%message
-                  "handle_message did not consume entire iobuf"
-                    (message_type : Protocol.Backend.constructor)
-                    ~bytes_remaining:(Iobuf.length iobuf : int)
-                ]
-              ))
+            match check_window_after_handle_message message_type iobuf ~message_hi_bound with
+            | Error err -> Protocol_error err
+            | Ok () -> res
         in
-        Iobuf.bounded_flip_hi iobuf hi_bound;
+        Iobuf.bounded_flip_hi iobuf chunk_hi_bound;
         match res with
         | Protocol_error err -> return (`Stop (`Protocol_error err))
         | Continue -> loop iobuf
@@ -318,9 +429,9 @@ end = struct
     match t.state with
     | Failed err ->
       return (Connection_closed err)
-    | Closed_gracefully | Closing _ ->
+    | Closed_gracefully | Closing ->
       force can't_read_because_closed
-    | Open _ ->
+    | Open ->
       (* In case of some failure (writer failure, including asynchronous) the
          reader will be closed and reads will return Eof. So, after the read
          result is determined, we check [t.state], so that we can give a better
@@ -329,9 +440,9 @@ end = struct
       match t.state with
       | Failed err ->
         return (Connection_closed err)
-      | Closing _ | Closed_gracefully ->
+      | Closing | Closed_gracefully ->
         force can't_read_because_closed
-      | Open _ ->
+      | Open ->
         let res =
           match res with
           | `Stopped s -> s
@@ -592,10 +703,10 @@ let parse_and_start_executing_query t query_string ~parameters =
         [%message
           "query issued against previously-failed connection"
             ~original_error:(err : Error.t)]))
-  | Closing _ | Closed_gracefully ->
+  | Closing | Closed_gracefully ->
     return (Connection_closed (
       Error.of_string "query issued against connection closed by user"))
-  | Open _ ->
+  | Open ->
     catch_write_errors t ~flush_message:Write_afterwards ~f:(fun writer ->
       Protocol.Frontend.Writer.parse
         writer
@@ -797,8 +908,17 @@ let internal_query t ?(parameters=[||]) ?pushback query_string ~handle_row =
         match Protocol.Backend.DataRow.consume iobuf with
         | Error err -> Protocol_error err
         | Ok values ->
-          handle_row ~column_names ~values;
-          Continue
+          match Array.length values = Array.length column_names with
+          | false ->
+            protocol_error_s
+              [%message
+                "number of columns in DataRow message did not match RowDescription"
+                  (column_names : string array)
+                  (values : string option array)
+              ]
+          | true ->
+            handle_row ~column_names ~values;
+            Continue
       )
   in
   (* Note that if we're not within a BEGIN/END block, [sync_after_query] commits the
@@ -987,3 +1107,18 @@ let copy_in_rows t ~table_name ~column_names ~feed_data =
     | Abort _ | Wait _ | Finished as x -> x
     | Data row -> Data (String_escaping.Copy_in.row_to_string row)
   )
+
+let listen_to_notifications t ~channel ~f =
+  let query = String_escaping.Listen.query ~channel in
+  let channel = Notification_channel.of_string channel in
+  let bus = notification_bus t channel in
+  let monitor = Monitor.current () in
+  let subscriber =
+    Bus.subscribe_exn
+      (Bus.read_only bus)
+      [%here]
+      ~f:(fun payload -> f ~payload)
+      ~on_callback_raise:(fun error -> Monitor.send_exn monitor (Error.to_exn error))
+  in
+  ignore (subscriber : _ Bus.Subscriber.t);
+  query_expect_no_data t query
