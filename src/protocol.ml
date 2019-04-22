@@ -18,6 +18,28 @@ module Array = struct
       res
 end
 
+(* When [Word_size.word_size = W32], [int] can take at most 31 bits, so the max is 2**30.
+
+   [Iobuf.Consume.int32_be] silently truncates. This is a shame (ideally it would return
+   a [Int63.t]; see the comment at the top of [Int32.t], but otherwise an [Int32.t] would
+   certainly suffice) and makes it quite annoying to safely implement something that reads
+   32 bit ints on a 32 bit ocaml platform.
+
+   Looking below, the 32 bit ints are
+
+   - [message_length]: we'd refuse to read messages larger than 2**30 anyway,
+   - [num_fields] (in a row): guaranteed to be < 1600 by postgres
+     (https://www.postgresql.org/docs/11/ddl-basics.html),
+   - [pid]: on linux, less than 2**22 (man 5 proc),
+   - [secret] (from [BackendKeyData]): no guarantees.
+
+   so, for now it seems safe enough to to stumble on in 32-bit-mode even though iobuf
+   would silently truncate the ints. This is unsatisfying (besides not supporting reading
+   [secret]) because if we've made a mistake, or have a bug, we'd rather crash on the
+   protocol error than truncate.
+
+   We'll revisit it if someone wants it. *)
+
 module Frontend = struct
   module Shared = struct
     let validate_null_terminated_exn ~field_name str =
@@ -30,10 +52,25 @@ module Frontend = struct
 
     let int16_min = -32768
     let int16_max = 32767
-    let int32_min = -2147483648
-    let int32_max = 2147483647
-    let () = assert (String.equal (Int.to_string int32_min) "-2147483648")
-    let () = assert (String.equal (Int.to_string int32_max) "2147483647")
+
+    let int32_min =
+      match Word_size.word_size with
+      | W64 -> Int32.to_int_exn Int32.min_value
+      | W32 -> Int.min_value
+
+    let int32_max =
+      match Word_size.word_size with
+      | W64 -> Int32.to_int_exn Int32.max_value
+      | W32 -> Int.max_value
+
+    let () =
+      match Word_size.word_size with
+      | W64 ->
+        assert (String.equal (Int.to_string int32_min) "-2147483648");
+        assert (String.equal (Int.to_string int32_max) "2147483647")
+      | W32 ->
+        assert (String.equal (Int.to_string int32_min) "-1073741824");
+        assert (String.equal (Int.to_string int32_max) "1073741823")
 
     let [@inline always] fill_int16_be iobuf value =
       match int16_min <= value && value <= int16_max with
@@ -160,7 +197,7 @@ module Frontend = struct
       for idx = 0 to num_parameters - 1 do
         match t.parameters.(idx) with
         | None ->
-          Iobuf.Fill.int32_be_trunc iobuf (-1)
+          Shared.fill_int32_be iobuf (-1)
         | Some str ->
           Shared.fill_int32_be iobuf (String.length str);
           Iobuf.Fill.stringo iobuf str
@@ -272,6 +309,7 @@ module Frontend = struct
     let gen ~constructor =
       let tmp = Iobuf.create ~len:5 in
       Iobuf.Poke.char tmp ~pos:0 constructor;
+      (* fine to use Iobuf's int32 function, as [4] is clearly in range. *)
       Iobuf.Poke.int32_be_trunc tmp ~pos:1 4;
       Iobuf.to_string tmp
 
