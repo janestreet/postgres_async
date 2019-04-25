@@ -267,7 +267,7 @@ let%expect_test "aborting" =
     (match result with
      | Ok () -> failwith "succeeded!?"
      | Error err ->
-       let err = Utils.delete_unstable_bit_of_server_error [%sexp (err : Error.t)] in
+       let err = Utils.delete_unstable_bits_of_error [%sexp (err : Error.t)] in
        print_s err);
     let%bind () =
       (* 57014: query_cancelled. *)

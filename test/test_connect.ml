@@ -143,3 +143,66 @@ let%expect_test "unix sockets & tcp" =
   in
   Or_error.ok_exn result;
   return ()
+
+let%expect_test "authentication method we don't support" =
+  let%bind tcp_server =
+    let handle_client _sock _reader writer =
+      Writer.write writer "R\x00\x00\x00\x08\x00\x00\x00\x06";
+      Deferred.never ()
+    in
+    Tcp.Server.create
+      ~on_handler_error:`Raise
+      Tcp.Where_to_listen.of_port_chosen_by_os
+      handle_client
+  in
+  let where_to_connect =
+    let port = Tcp.Server.listening_on tcp_server in
+    Tcp.Where_to_connect.of_host_and_port (Host_and_port.create ~host:"localhost" ~port)
+  in
+  let%bind result =
+    Postgres_async.with_connection
+      ~server:where_to_connect
+      ~user:"postgres"
+      ~database:"postgres"
+      (fun _ -> return ())
+  in
+  print_s [%sexp (result : _ Or_error.t)];
+  [%expect {| (Error "Server wants unimplemented auth subtype: SCMCredential") |}]
+
+let%expect_test "connection refused" =
+  (* bind, but don't listen or accept. *)
+  let socket = Core.Unix.socket ~domain:PF_INET ~kind:SOCK_STREAM ~protocol:0 in
+  Core.Unix.bind socket ~addr:(ADDR_INET (Unix.Inet_addr.of_string "0.0.0.0", 0));
+  let where_to_connect =
+    match Core.Unix.getsockname socket with
+    | ADDR_UNIX _ -> assert false
+    | ADDR_INET (_, port) ->
+      Tcp.Where_to_connect.of_host_and_port (Host_and_port.create ~host:"localhost" ~port)
+  in
+  let%bind result =
+    Postgres_async.with_connection
+      ~server:where_to_connect
+      ~user:"postgres"
+      ~database:"postgres"
+      (fun _ -> return ())
+  in
+  Core.Unix.close socket;
+  print_s [%sexp (result : _ Or_error.t)];
+  [%expect {|
+    (Error
+     (monitor.ml.Error
+      (Unix.Unix_error "Connection refused" connect 127.0.0.1:PORT)
+      ("<backtrace elided in test>" "Caught by monitor Tcp.close_sock_on_error"))) |}]
+
+let%expect_test "graceful close" =
+  let harness = force harness in
+  let%bind connection =
+    Postgres_async.connect ()
+      ~server:(Harness.where_to_connect harness)
+      ~user:"postgres"
+      ~database:"postgres"
+  in
+  let connection = Or_error.ok_exn connection in
+  let%bind result = Postgres_async.close connection in
+  print_s [%sexp (result : unit Or_error.t)];
+  [%expect {| (Ok ()) |}]

@@ -150,7 +150,7 @@ let%expect_test "failures are reported gracefully and don't kill the connection"
         print_s [%message "OK"];
         return ()
       | Error err ->
-        let err = Utils.delete_unstable_bit_of_server_error (Error.sexp_of_t err) in
+        let err = Utils.delete_unstable_bits_of_error (Error.sexp_of_t err) in
         print_s [%message "Error" ~_:(err : Sexp.t)];
         return ()
     in
@@ -311,13 +311,14 @@ let%expect_test "transactions" =
     return ()
   )
 
-let%expect_test "pushback" =
-  with_connection_exn (fun postgres ->
-    (* make a table with 65k rows. *)
-    let%bind () =
-      query_exn
-        postgres
-        {|
+let one_kb_of_a = lazy (String.init 1024 ~f:(const 'a'))
+
+let make_very_large_table_x postgres =
+  (* make a table with 65k rows. *)
+  let%bind () =
+    query_exn
+      postgres
+      {|
           DO $$ BEGIN
             CREATE TEMPORARY TABLE x ( y integer, z text );
             INSERT INTO x (y) VALUES (0);
@@ -326,12 +327,16 @@ let%expect_test "pushback" =
             END LOOP;
           END $$
         |}
-    in
-    (* now make the rows big (so, ~65Mb) *)
-    let one_kb = String.init 1024 ~f:(const 'a') in
-    let%bind () =
-      query_exn postgres "UPDATE x SET z = $1" ~parameters:[|Some one_kb|]
-    in
+  in
+  (* now make the rows big (so, ~65Mb) *)
+  let%bind () =
+    query_exn postgres "UPDATE x SET z = $1" ~parameters:[|Some (force one_kb_of_a)|]
+  in
+  return ()
+
+let%expect_test "pushback" =
+  with_connection_exn (fun postgres ->
+    let%bind () = make_very_large_table_x postgres in
     let rows_handled = ref 0 in
     let reached_10000_rows = Ivar.create () in
     let ok_to_proceed_past_10000_rows = Ivar.create () in
@@ -346,7 +351,7 @@ let%expect_test "pushback" =
             | [|Some y; Some z|] -> (y, z)
             | _ -> assert false
           in
-          assert (String.equal z one_kb);
+          assert (String.equal z (force one_kb_of_a));
           assert (Int.equal (Int.of_string y) !rows_handled);
           incr rows_handled
         )
@@ -385,7 +390,7 @@ let%expect_test "query expect no data" =
         print_s [%message "OK"];
         return ()
       | Error err ->
-        let err = Utils.delete_unstable_bit_of_server_error (Error.sexp_of_t err) in
+        let err = Utils.delete_unstable_bits_of_error (Error.sexp_of_t err) in
         print_s [%message "Error" ~_:(err : Sexp.t)];
         return ()
     in
@@ -435,5 +440,91 @@ let%expect_test "query expect no data" =
         ((20))
         ((20)) |}]
     in
+    return ()
+  )
+
+let%expect_test "insane number of parameters" =
+  (* Committing this offence actually kills the connection because we fail to write the
+     'bind' message and the code as currently structured won't recover from that.
+
+     This is a reasonable stance to take since in general if we fail to write a message
+     we're arguably desynchronised and should bail out. Admittedly though, for this
+     specific case we _could_ recover. We just don't care to. *)
+  with_connection_exn (fun postgres ->
+    match%bind
+      Postgres_async.query_expect_no_data
+        postgres
+        ""
+        ~parameters:(Array.init 100_000 ~f:(fun _ -> None))
+    with
+    | Ok () -> assert false
+    | Error err ->
+      let err = Utils.delete_unstable_bits_of_error (Error.sexp_of_t err) in
+      print_s [%message "Error" ~_:(err : Sexp.t)];
+      [%expect {|
+        (Error
+         ("Writer.write_gen_whole: error writing value"
+          (exn (Failure "int16 out of range: 100000")))) |}]
+  )
+
+let%expect_test "query terminated mid execution" =
+  with_connection_exn (fun postgres ->
+    let backend_pid = Set_once.create () in
+    let%bind result =
+      Postgres_async.query
+        postgres
+        "SELECT pg_backend_pid()"
+        ~handle_row:(fun ~column_names:_ ~values ->
+          Set_once.set_exn backend_pid [%here] values.(0)
+        )
+    in
+    Or_error.ok_exn result;
+    let backend_pid = Set_once.get_exn backend_pid [%here] in
+    let%bind () = make_very_large_table_x postgres in
+    let rows_handled = ref 0 in
+    let reached_10000_rows = Ivar.create () in
+    let ok_to_proceed_past_10000_rows = Ivar.create () in
+    let query_done_deferred =
+      Postgres_async.query
+        postgres
+        "SELECT y, z FROM x ORDER BY y"
+        ~handle_row:(fun ~column_names:_ ~values:_ -> incr rows_handled)
+        ~pushback:(fun () ->
+          match !rows_handled > 10000 with
+          | false -> return ()
+          | true ->
+            Ivar.fill_if_empty reached_10000_rows ();
+            Ivar.read ok_to_proceed_past_10000_rows
+        )
+    in
+    let%bind () = Ivar.read reached_10000_rows in
+    let%bind () =
+      with_connection_exn (fun postgres2 ->
+        query_exn
+          postgres2
+          "SELECT pg_cancel_backend($1)"
+          ~parameters:[|backend_pid|]
+      )
+    in
+    let%bind () = [%expect {| ((t)) |}] in
+    Ivar.fill ok_to_proceed_past_10000_rows ();
+    let%bind () =
+      match%bind query_done_deferred with
+      | Ok () -> assert false
+      | Error err ->
+        let err = Utils.delete_unstable_bits_of_error (Error.sexp_of_t err) in
+        print_s [%message "Error" ~_:(err : Sexp.t)];
+        return ()
+    in
+    let%bind () =
+      [%expect {|
+        (Error
+         ("Error during query execution (despite parsing ok)"
+          ((severity ERROR) (code 57014)))) |}]
+    in
+    assert (!rows_handled < 50000);
+    (* note that the connection remains healthy. *)
+    let%bind () = query_exn postgres "SELECT 1" in
+    let%bind () = [%expect {| ((1)) |}] in
     return ()
   )

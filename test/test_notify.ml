@@ -42,10 +42,25 @@ let%expect_test "listen/notify" =
         query_exn postgres2 "NOTIFY channel_one, 'from-another-process'"
       )
     in
-    let%bind () = query_exn postgres "" in
     let%bind () = sync3 in
     let%bind () =
       [%expect {| (notification (channel channel_one) (payload from-another-process)) |}]
+    in
+    let%bind () =
+      Harness.with_connection_exn harness ~database:"postgres" (fun postgres2 ->
+        let sync4 = Bvar.wait saw_notification in
+        let%bind () = query_exn postgres2 "NOTIFY \"channel-2\", 'm1'" in
+        let%bind () = sync4 in
+        let sync5 = Bvar.wait saw_notification in
+        let%bind () = query_exn postgres2 "NOTIFY \"channel-2\", 'm2'" in
+        let%bind () = sync5 in
+        return ()
+      )
+    in
+    let%bind () =
+      [%expect {|
+        (notification (channel channel-2) (payload m1))
+        (notification (channel channel-2) (payload m2)) |}]
     in
     return ()
   )

@@ -3,7 +3,7 @@ open! Async
 
 (* Most of the error message from postgres is not stable wrt. server version.
    This is probably good enough. *)
-let rec delete_unstable_bit_of_server_error : Sexp.t -> Sexp.t =
+let rec delete_unstable_bits_of_error : Sexp.t -> Sexp.t =
   let is_severity_pair : Sexp.t -> bool =
     function
     | List [Atom "severity"; Atom _] -> true
@@ -18,8 +18,10 @@ let rec delete_unstable_bit_of_server_error : Sexp.t -> Sexp.t =
   | Atom _ as x -> x
   | List tags when List.exists tags ~f:is_severity_pair ->
     List (List.filter tags ~f:is_severity_or_code_pair)
+  | List [Atom "Writer error from inner_monitor" as e1; e2; _] ->
+    List [e1; e2; Atom "<omitted>"]
   | List list ->
-    List (List.map list ~f:delete_unstable_bit_of_server_error)
+    List (List.map list ~f:delete_unstable_bits_of_error)
 
 let do_an_epoll =
   lazy (

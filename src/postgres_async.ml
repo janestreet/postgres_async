@@ -13,16 +13,19 @@ type state =
   | Closed_gracefully
 [@@deriving sexp_of]
 
-(* There are a couple of invariants we need to be careful of. First, changes to
-   [t.state] need simultaneous ivar filling and/or reader & writer closing.
+(* There are a couple of invariants we need to be careful of:
 
-   Secondly, we need to be careful to catch synchronous writer exceptions and
-   write flush messages to postgres.
+   - changes to [t.state] need simultaneous ivar filling and/or reader & writer closing.
+   - [t.state = Open _] must imply [t.reader] is not closed
 
-   This module forbids the rest of the code from doing those things directly
-   (by making [t.state] private and the writer only available via a helper
-   function), so that by reading the short [module T] we can be confident the
-   whole module handles this correctly. *)
+   Further, we need to be careful to catch synchronous writer exceptions and write flush
+   messages to postgres.
+
+   We try and make sure these invariants hold by making some of the fields in [t] opaque
+   to stuff outside of this small module, so that by reading the short [module T] we can
+   be confident the whole module handles this correctly.
+
+   (It's not perfect, e.g. [t.reader] is exposed, but this isn't awful.) *)
 module T : sig
   (* [opaque] makes [writer] and [state_changed] inaccessible outside of [T]. *)
   type 'a opaque
@@ -32,7 +35,7 @@ module T : sig
     ; reader : Reader.t
     ; mutable state : state
     ; state_changed : (unit, read_write) Bvar.t opaque
-    ; sequencer : unit Sequencer.t
+    ; sequencer : Query_sequencer.t
     ; runtime_parameters : string String.Table.t
     ; notification_buses : (string -> unit, read_write) Bus.t Notification_channel.Table.t
     ; backend_key : Types.backend_key Set_once.t
@@ -42,9 +45,6 @@ module T : sig
   val create_internal : Reader.t -> Writer.t -> t
 
   val failed : t -> Error.t -> unit
-
-  val close_finished : t -> unit Or_error.t Deferred.t
-  val close : t -> unit Or_error.t Deferred.t
 
   type to_flush_or_not =
     | Not_required
@@ -61,6 +61,9 @@ module T : sig
 
   val bytes_pending_in_writer_buffer : t -> int
   val wait_for_writer_buffer_to_be_empty : t -> unit Deferred.t
+
+  val close_finished : t -> unit Or_error.t Deferred.t
+  val close : t -> unit Or_error.t Deferred.t
 end = struct
   type 'a opaque = 'a
 
@@ -69,7 +72,7 @@ end = struct
     ; reader : (Reader.t [@sexp.opaque])
     ; mutable state : state
     ; state_changed : (unit, read_write) Bvar.t
-    ; sequencer : unit Sequencer.t
+    ; sequencer : Query_sequencer.t
     ; runtime_parameters : string String.Table.t
     ; notification_buses : (string -> unit, read_write) Bus.t Notification_channel.Table.t
     ; backend_key : Types.backend_key Set_once.t
@@ -98,62 +101,11 @@ end = struct
     ; writer
     ; state = Open
     ; state_changed = Bvar.create ()
-    ; sequencer = Sequencer.create ~continue_on_error:true ()
+    ; sequencer = Query_sequencer.create ()
     ; runtime_parameters = String.Table.create ()
     ; notification_buses = Notification_channel.Table.create ~size:1 ()
     ; backend_key = Set_once.create ()
     }
-
-  let ensure_is_eof reader =
-    (* If we try to read from a closed reader, we'll get an exn. This could
-       happen if the user forces a stop while we're gracefully closing. *)
-    match%bind
-      Clock.with_timeout
-        (sec 1.)
-        (Monitor.try_with (fun () -> Reader.read_char reader))
-    with
-    | `Timeout -> return (Or_error.error_string "EOF expected, but instead stuck")
-    | `Result (Error exn) -> return (Or_error.of_exn exn)
-    | `Result (Ok (`Ok _)) -> return (Or_error.error_string "EOF expected, but there was still data")
-    | `Result (Ok `Eof) -> return (Ok `Closed_gracefully)
-
-  let start_close__gracefully_if_possible t =
-    match t.state with
-    | Failed _ | Closed_gracefully | Closing -> ()
-    | Open ->
-      set_state t Closing;
-      match Protocol.Frontend.Writer.terminate t.writer with
-      | exception exn -> failed t (Error.of_exn exn)
-      | () ->
-        don't_wait_for (
-          match%bind ensure_is_eof t.reader with
-          | Error err ->
-            failed t err;
-            Deferred.unit
-          | Ok `Closed_gracefully ->
-            let%bind () = cleanup_resources t in
-            match t.state with
-            | Open | Closed_gracefully -> assert false
-            | Failed _ ->
-              (* e.g., if the Writer had an asynchronous exn while the reader was being closed,
-                 we might have called [failed t] and filled this ivar already. *)
-              return ()
-            | Closing ->
-              set_state t Closed_gracefully;
-              return ()
-        )
-
-  let rec close_finished t =
-    match t.state with
-    | Failed err -> return (Error err)
-    | Closed_gracefully -> return (Ok ())
-    | Closing | Open ->
-      let%bind () = Bvar.wait t.state_changed in
-      close_finished t
-
-  let close t =
-    start_close__gracefully_if_possible t;
-    close_finished t
 
   type to_flush_or_not =
     | Not_required
@@ -172,6 +124,54 @@ end = struct
 
   let bytes_pending_in_writer_buffer t = Writer.bytes_to_write t.writer
   let wait_for_writer_buffer_to_be_empty t = Writer.flushed t.writer
+
+  let do_close_gracefully_if_possible t =
+    match t.state with
+    | Failed _ | Closed_gracefully | Closing -> return ()
+    | Open ->
+      set_state t Closing;
+      let closed_gracefully_deferred =
+        Query_sequencer.enqueue t.sequencer (fun () ->
+          catch_write_errors t ~flush_message:Not_required ~f:(fun writer ->
+            Protocol.Frontend.Writer.terminate writer
+          );
+          (* we'll get an exception if the reader is already closed. *)
+          match%bind Monitor.try_with (fun () -> Reader.read_char t.reader) with
+          | Ok `Eof -> return (Ok ())
+          | Ok (`Ok c) -> return (Or_error.errorf "EOF expected, but got '%c'" c)
+          | Error exn -> return (Or_error.of_exn exn)
+        )
+      in
+      match%bind Clock.with_timeout (sec 1.) closed_gracefully_deferred with
+      | `Timeout ->
+        failed t (Error.of_string "EOF expected, but instead stuck");
+        return ()
+      | `Result (Error err) ->
+        failed t err;
+        return ()
+      | `Result (Ok ()) ->
+        let%bind () = cleanup_resources t in
+        match t.state with
+        | Open | Closed_gracefully -> assert false
+        | Failed _ ->
+          (* e.g., if the Writer had an asynchronous exn while the reader was being
+             closed, we might have called [failed t] and filled this ivar already. *)
+          return ()
+        | Closing ->
+          set_state t Closed_gracefully;
+          return ()
+
+  let rec close_finished t =
+    match t.state with
+    | Failed err -> return (Error err)
+    | Closed_gracefully -> return (Ok ())
+    | Closing | Open ->
+      let%bind () = Bvar.wait t.state_changed in
+      close_finished t
+
+  let close t =
+    don't_wait_for (do_close_gracefully_if_possible t);
+    close_finished t
 end
 
 include T
@@ -211,11 +211,25 @@ module Message_reading : sig
     | Connection_closed of Error.t
     | Done of 'a
 
+  (** NoticeResponse, and ParameterStatus and NotificationResponse are 'asynchronous
+      messages' and are not associated with a specific request-response conversation.
+      They can happen at any time.
+
+      [read_messages] handles these for you, and does not show them to your
+      [handle_message] callback.  *)
   val read_messages
     :  ?pushback:(unit -> unit Deferred.t)
     -> t
     -> handle_message:'a handle_message
     -> 'a read_messages_result Deferred.t
+
+  (** If a message arrives while no request-response conversation (query or otherwise) is
+      going on, use [consume_one_asynchronous_message] to eat it.
+
+      If the message is one of those asynchronous messages, it will be handled. If it is
+      some other message type, that is a protocol error and the connection will be closed.
+      If the reader is actually at EOF, the connection will be closed with an error. *)
+  val consume_one_asynchronous_message : t -> unit read_messages_result Deferred.t
 end = struct
   type 'a handle_message_result =
     | Stop of 'a
@@ -234,38 +248,6 @@ end = struct
         Some v
       in
       Option.value override ~default)
-
-  let handle_notice_response iobuf =
-    match Protocol.Backend.NoticeResponse.consume iobuf with
-    | Error err -> Protocol_error err
-    | Ok info ->
-      Log.Global.sexp ~level:`Info [%message "Postgres NoticeResponse" (info : Info.t)];
-      Continue
-
-  let handle_parameter_status t iobuf =
-    match Protocol.Backend.ParameterStatus.consume iobuf with
-    | Error err -> Protocol_error err
-    | Ok { key; data } ->
-      Hashtbl.set t.runtime_parameters ~key ~data;
-      Continue
-
-  let handle_notification_response t iobuf =
-    match Protocol.Backend.NotificationResponse.consume iobuf with
-    | Error err -> Protocol_error err
-    | Ok { pid = _; channel; payload } ->
-      let bus = notification_bus t channel in
-      (match Bus.num_subscribers bus with
-       | 0 ->
-         Log.Global.sexp
-           ~level:`Error
-           [%message
-             "Postgres NotificationResponse on channel that no callbacks \
-              are listening to"
-               (channel : Notification_channel.t)
-           ]
-       | _ ->
-         Bus.write bus payload);
-      Continue
 
   type 'a handle_message
     =  Protocol.Backend.constructor
@@ -370,7 +352,7 @@ end = struct
       | true ->
         Ok ()
 
-  let handle_chunk t ~handle_message ~pushback =
+  let handle_chunk ~handle_message ~pushback =
     let stop_error sexp = return (`Stop (`Protocol_error (Error.create_s sexp))) in
     let rec loop iobuf =
       let chunk_hi_bound = Iobuf.Hi_bound.window iobuf in
@@ -389,12 +371,7 @@ end = struct
         let message_hi_bound = Iobuf.Hi_bound.window iobuf in
         let res =
           let iobuf = Iobuf.read_only iobuf in
-          (* Notice Response and Parameter Status may happen at any time. *)
-          match message_type with
-          | NoticeResponse -> handle_notice_response iobuf
-          | ParameterStatus -> handle_parameter_status t iobuf
-          | NotificationResponse -> handle_notification_response t iobuf
-          | _ -> handle_message message_type iobuf
+          handle_message message_type iobuf
         in
         let res =
           match res with
@@ -422,21 +399,22 @@ end = struct
     lazy (
       return (Connection_closed (Error.of_string "can't read: closed or closing")))
 
-  let read_messages ?(pushback=no_pushback) t ~handle_message =
-    let handle_chunk = Staged.unstage (handle_chunk t ~handle_message ~pushback) in
-    (* We shouldn't ever get an exn here. In particular, closing the reader
-       underneath us should simply produce `Eof. *)
+  let run_reader ?(pushback=no_pushback) t ~handle_message =
+    let handle_chunk = Staged.unstage (handle_chunk ~handle_message ~pushback) in
     match t.state with
     | Failed err ->
       return (Connection_closed err)
     | Closed_gracefully | Closing ->
       force can't_read_because_closed
     | Open ->
+      (* [t.state] = [Open _] implies [t.reader] is not closed, and so this function will
+         not raise. Note further that if the reader is closed _while_ we are reading, it
+         does not raise. *)
+      let%bind res = Reader.read_one_iobuf_at_a_time t.reader ~handle_chunk in
       (* In case of some failure (writer failure, including asynchronous) the
          reader will be closed and reads will return Eof. So, after the read
          result is determined, we check [t.state], so that we can give a better
          error message than "unexpected EOF". *)
-      let%bind res = Reader.read_one_iobuf_at_a_time t.reader ~handle_chunk in
       match t.state with
       | Failed err ->
         return (Connection_closed err)
@@ -464,6 +442,91 @@ end = struct
           return (Connection_closed err)
         | `Done res ->
           return (Done res)
+
+  let handle_notice_response iobuf =
+    match Protocol.Backend.NoticeResponse.consume iobuf with
+    | Error _ as err -> err
+    | Ok info ->
+      Log.Global.sexp ~level:`Info [%message "Postgres NoticeResponse" (info : Info.t)];
+      Ok ()
+
+  let handle_parameter_status t iobuf =
+    match Protocol.Backend.ParameterStatus.consume iobuf with
+    | Error _ as err -> err
+    | Ok { key; data } ->
+      Hashtbl.set t.runtime_parameters ~key ~data;
+      Ok ()
+
+  let handle_notification_response t iobuf =
+    match Protocol.Backend.NotificationResponse.consume iobuf with
+    | Error _ as err -> err
+    | Ok { pid = _; channel; payload } ->
+      let bus = notification_bus t channel in
+      (match Bus.num_subscribers bus with
+       | 0 ->
+         Log.Global.sexp
+           ~level:`Error
+           [%message
+             "Postgres NotificationResponse on channel that no callbacks \
+              are listening to"
+               (channel : Notification_channel.t)
+           ]
+       | _ ->
+         Bus.write bus payload);
+      Ok ()
+
+  let read_messages ?pushback t ~handle_message =
+    let continue_if_ok =
+      function
+      | Error err -> Protocol_error err
+      | Ok () -> Continue
+    in
+    let handle_message message_type iobuf =
+      match (message_type : Protocol.Backend.constructor) with
+      | NoticeResponse       -> continue_if_ok (handle_notice_response iobuf)
+      | ParameterStatus      -> continue_if_ok (handle_parameter_status t iobuf)
+      | NotificationResponse -> continue_if_ok (handle_notification_response t iobuf)
+      | _ -> handle_message message_type iobuf
+    in
+    run_reader ?pushback t ~handle_message
+
+  let consume_one_asynchronous_message t =
+    let stop_if_ok =
+      function
+      | Error err -> Protocol_error err
+      | Ok () -> Stop ()
+    in
+    let handle_message message_type iobuf =
+      match (message_type : Protocol.Backend.constructor) with
+      | NoticeResponse       -> stop_if_ok (handle_notice_response iobuf)
+      | ParameterStatus      -> stop_if_ok (handle_parameter_status t iobuf)
+      | NotificationResponse -> stop_if_ok (handle_notification_response t iobuf)
+      | ErrorResponse ->
+        (* ErrorResponse is a weird one, because it's very much a message that's part of
+           the request-response part of the protocol, but secretly you will actually get
+           one if e.g. your backend is terminated by [pg_terminate_backend]. The fact that
+           this asynchronous error-response possibility isn't mentioned in the
+           "protocol-flow" docs kinda doesn't matter as the connection is being destroyed.
+
+           Ultimately handling it specially here only changes the contents of the
+           [Protocol_error _] we return (i.e., behaviour is unch vs. the catch-all case).
+           Think of it as giving people better error messages, not a semantic thing. *)
+        let tag = "ErrorResponse received asynchronously, assuming connection is dead" in
+        let error =
+          match Protocol.Backend.ErrorResponse.consume iobuf with
+          | Error err -> err
+          | Ok err -> Error.tag err ~tag
+        in
+        Protocol_error error
+      | other ->
+        Protocol_error (Error.create_s (
+          [%message
+            "Unsolicited message from server outside of query conversation"
+              (other : Protocol.Backend.constructor)
+          ]
+        ))
+    in
+    run_reader t ~handle_message
 end
 
 include Message_reading
@@ -538,6 +601,56 @@ let login t ~user ~password ~gss_krb_token ~database =
       unexpected_msg_type msg_type [%sexp "logging in"]
   )
 
+(* So there are a few different ways one could imagine handling asynchronous messages, and
+   it basically breaks down to whether or not you have a single background job pulling
+   messages out of the reader, filtering away asynchronous messages, and putting the
+   remainder somewhere that request-response functions can pull them out of, or you have
+   some way of synchronising access to the reader and noticing if it lights up while no
+   request-response function is running.
+
+   We've gone for the latter, basically because efficiently handing messages from the
+   background to request-response functions is painful, and it puts a lot of complicated
+   state into [t] (the background job can't be separate, because it needs to know whether
+   or not [t.sequencer] is in use in order to classify an [ErrorResponse] as part of
+   request-response or as asynchronous).
+
+   The tradeoff is that we need a custom [Query_sequencer] module for the [when_idle]
+   function (though at least that can be a separate, isolated module), and we need to use
+   the fairly low level [interruptible_ready_to] on the [Reader]'s fd (which is skethcy).
+   All in, I think this turns out to be simpler, and it also isolates the features that
+   add async message support from the rest of the library. *)
+let handle_asynchronous_messages t =
+  Query_sequencer.when_idle t.sequencer (fun () ->
+    let module Q = Query_sequencer in
+    match t.state with
+    | Failed _ | Closing | Closed_gracefully -> return Q.Finished
+    | Open ->
+      let%bind res =
+        match Reader.bytes_available t.reader > 0 with
+        | true -> return `Ready
+        | false ->
+          Fd.interruptible_ready_to
+            (Reader.fd t.reader)
+            `Read
+            ~interrupt:(Query_sequencer.other_jobs_are_waiting t.sequencer)
+      in
+      match t.state with
+      | Closed_gracefully | Closing | Failed _ -> return Q.Finished
+      | Open ->
+        match res with
+        | `Interrupted ->
+          return Q.Call_me_when_idle_again
+        | `Bad_fd | `Closed as res ->
+          (* [t.state = Open _] implies the reader is open. *)
+          raise_s [%message "handle_asynchronous_messages" (res : [`Bad_fd | `Closed ])]
+        | `Ready ->
+          match%bind consume_one_asynchronous_message t with
+          | Connection_closed _ ->
+            return Q.Finished
+          | Done () ->
+            return Q.Call_me_when_idle_again
+  )
+
 let default_user = Memo.unit (fun () -> Monitor.try_with_or_error Unix.getlogin)
 
 type packed_where_to_connect =
@@ -592,7 +705,9 @@ let connect
       | `Interrupt -> login_failed (Error.of_string "login interrupted")
       | `Result (Connection_closed err) -> return (Error err)
       | `Result (Done (Error err))      -> login_failed err
-      | `Result (Done (Ok ()))          -> return (Ok t)
+      | `Result (Done (Ok ())) ->
+        handle_asynchronous_messages t;
+        return (Ok t)
 
 let with_connection ?interrupt ?server ?user ?password ?gss_krb_token ~database f =
   match%bind connect ?interrupt ?server ?user ?password ?gss_krb_token ~database () with
@@ -946,7 +1061,7 @@ let query t ?parameters ?pushback query_string ~handle_row =
         callback_raised := true
   in
   let%bind result =
-    Throttle.enqueue t.sequencer (fun () ->
+    Query_sequencer.enqueue t.sequencer (fun () ->
       internal_query t ?parameters ?pushback query_string ~handle_row
     )
   in
@@ -958,7 +1073,7 @@ let query t ?parameters ?pushback query_string ~handle_row =
    and [query] have because there's no callback to wrap and it's easy enough to
    just throw the sequencer around the whole function. *)
 let query_expect_no_data t ?(parameters=[||]) query_string =
-  Throttle.enqueue t.sequencer (fun () ->
+  Query_sequencer.enqueue t.sequencer (fun () ->
     let%bind result =
       match%bind parse_and_start_executing_query t query_string ~parameters with
       | Connection_closed _ as err -> return err
@@ -1089,7 +1204,7 @@ let copy_in_raw t ?parameters query_string ~feed_data =
       Abort { reason = "feed_data callback raised" }
   in
   let%bind result =
-    Throttle.enqueue t.sequencer (fun () ->
+    Query_sequencer.enqueue t.sequencer (fun () ->
       internal_copy_in_raw t ?parameters query_string ~feed_data
     )
   in
