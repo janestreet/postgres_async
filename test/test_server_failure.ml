@@ -10,7 +10,12 @@ let print_or_error or_error =
   in
   print_s sexp
 
-let with_connection ?(database="postgres") func =
+let with_connection ?(show_errors=true) ?(database="postgres") func =
+  let sexp_of_error error =
+    match show_errors with
+    | false -> [%sexp "<omitted>"]
+    | true -> Utils.delete_unstable_bits_of_error [%sexp (error : Error.t)]
+  in
   (* [Postgres_async.with_connection] does not report failure to close the connection
      because we think that users would prefer to get the result of their function instead.
      But it's interesting to print it. *)
@@ -21,8 +26,7 @@ let with_connection ?(database="postgres") func =
       ~database
   with
   | Error error ->
-    let error = Utils.delete_unstable_bits_of_error [%sexp (error : Error.t)] in
-    print_s [%message "failed to connect" (error : Sexp.t)];
+    print_s [%message "failed to connect" (error : error)];
     return ()
   | Ok postgres ->
     let%bind () = func postgres in
@@ -31,16 +35,20 @@ let with_connection ?(database="postgres") func =
       print_s [%message "closed cleanly"];
       return ()
     | Error error ->
-      let error = Utils.delete_unstable_bits_of_error [%sexp (error : Error.t)] in
-      print_s [%message "failed to close" (error : Sexp.t)];
+      print_s [%message "failed to close" (error : error)];
       return ()
 
 let%expect_test "terminate backend" =
-  (* the easiest way to make this test deterministic is to have the backend kill itself,
-     but that's not quite realistic since it doesn't cover the case where we're terminated
-     while idle. *)
+  (* The easiest way to write this test is to have the backend kill itself. Sadly, if the
+     backend is killed while it is executing a query, there's a race: either the write of
+     the [Sync] message to fail ("writer failed asynchronously") or the write succeeds
+     (getting out the door before the connection is closed) and instead we get unexpected
+     EOF on the read that follows (seems to in practice be far more likely).
+
+     Therefore, we can't show the contents of the error messages, sadly. But we can assert
+     that we do get errors. *)
   let%bind () =
-    with_connection (fun postgres ->
+    with_connection ~show_errors:false (fun postgres ->
       let%bind result =
         Postgres_async.query
           postgres
@@ -54,22 +62,20 @@ let%expect_test "terminate backend" =
            ("Error during query execution (despite parsing ok)"
             ((severity FATAL) (code 57P01)))) |}]
       in
-      let%bind result = Postgres_async.query_expect_no_data postgres "" in
-      print_or_error result;
       let%bind () =
-        [%expect {|
-          (Error
-           ("query issued against previously-failed connection"
-            (original_error "Unexpected EOF (no unconsumed messages)"))) |}]
+        match%bind Postgres_async.query_expect_no_data postgres "" with
+        | Ok () -> assert false
+        | Error _ -> return ()
       in
       return ()
     )
   in
   let%bind () =
-    [%expect {| ("failed to close" (error "Unexpected EOF (no unconsumed messages)")) |}]
+    [%expect {| ("failed to close" (error <omitted>)) |}]
   in
-  (* here's a test where our backend is externally terminated while we're idle; a little
-     tricky to get right: *)
+  (* Here's a test where our backend is externally terminated while we're idle; a little
+     tricky to get right, but this one is actually deterministic (because we're not trying
+     to write at the same time as the connection is closed on us). *)
   let%bind () =
     with_connection (fun postgres ->
       let pg_stat_activity = Set_once.create () in
