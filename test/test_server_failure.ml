@@ -62,11 +62,13 @@ let%expect_test "terminate backend" =
            ("Error during query execution (despite parsing ok)"
             ((severity FATAL) (code 57P01)))) |}]
       in
-      let%bind () =
-        match%bind Postgres_async.query_expect_no_data postgres "" with
-        | Ok () -> assert false
-        | Error _ -> return ()
-      in
+      let%bind result = Postgres_async.query_expect_no_data postgres "" in
+      [%test_pred: unit Or_error.t]
+        (fun r ->
+           String.is_substring
+             (Sexp.to_string [%sexp (r : unit Or_error.t)])
+             ~substring:"query issued against previously-failed connection")
+        result;
       return ()
     )
   in
@@ -78,60 +80,30 @@ let%expect_test "terminate backend" =
      to write at the same time as the connection is closed on us). *)
   let%bind () =
     with_connection (fun postgres ->
-      let pg_stat_activity = Set_once.create () in
+      let backend_pid = Set_once.create () in
       let%bind result =
         Postgres_async.query
           postgres
-          "SELECT pid, backend_start FROM pg_stat_activity WHERE pid = pg_backend_pid()"
+          "SELECT pg_backend_pid()"
           ~handle_row:(fun ~column_names:_ ~values ->
-            Set_once.set_exn pg_stat_activity [%here] values
+            match values with
+            | [|Some p|] -> Set_once.set_exn backend_pid [%here] p
+            | _ -> assert false
           )
       in
       Or_error.ok_exn result;
-      let backend_pid, backend_start =
-        match Set_once.get_exn pg_stat_activity [%here] with
-        | [|Some p; Some s|] -> (Pid.of_string p, s)
-        | _ -> assert false
-      in
+      let backend_pid = Set_once.get_exn backend_pid [%here] in
       let%bind () =
         Harness.with_connection_exn (force harness) ~database:"postgres" (fun postgres2 ->
-          let backend_is_alive () =
-            let count = Set_once.create () in
-            let%bind result =
-              Postgres_async.query
-                postgres2
-                "SELECT COUNT(*) FROM pg_stat_activity \
-                 WHERE pid = $1 and backend_start = $2"
-                ~parameters:[|Some (Pid.to_string backend_pid); Some backend_start|]
-                ~handle_row:(fun ~column_names:_ ~values ->
-                  match values with
-                  | [|Some c|] -> Set_once.set_exn count [%here] (Int.of_string c)
-                  | _ -> assert false
-                )
-            in
-            Or_error.ok_exn result;
-            match Set_once.get_exn count [%here] with
-            | 0 -> return false
-            | 1 -> return true
-            | _ -> assert false
-          in
-          let%bind is_alive = backend_is_alive () in
-          assert is_alive;
           let%bind result =
             Postgres_async.query
               postgres2
               "SELECT pg_terminate_backend($1)"
-              ~parameters:[|Some (Pid.to_string backend_pid)|]
+              ~parameters:[|Some backend_pid|]
               ~handle_row:(fun ~column_names:_ ~values:_ -> ())
           in
           Or_error.ok_exn result;
-          Deferred.repeat_until_finished () (fun () ->
-            match%bind backend_is_alive () with
-            | false -> return (`Finished ())
-            | true ->
-              let%bind () = Clock.after (Time.Span.of_sec 0.1) in
-              return (`Repeat ())
-          )
+          return ()
         )
       in
       let%bind result = Postgres_async.close_finished postgres in
