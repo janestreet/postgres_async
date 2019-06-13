@@ -201,6 +201,10 @@ module Backend : sig
     val consume : ([> read], Iobuf.seek) Iobuf.t -> unit
   end
 
+  module CloseComplete : sig
+    val consume : ([> read], Iobuf.seek) Iobuf.t -> unit
+  end
+
   module RowDescription : sig
     (** Technically [format] could be [`Binary], but since [Frontend.Bind]
         doesn't ever ask for binary output right now, it's impossible to receive

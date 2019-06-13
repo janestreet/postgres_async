@@ -667,6 +667,10 @@ module Backend = struct
     let consume (_ : _ Iobuf.t) = ()
   end
 
+  module CloseComplete = struct
+    let consume (_ : _ Iobuf.t) = ()
+  end
+
   module RowDescription = struct
     type column =
       { name : string

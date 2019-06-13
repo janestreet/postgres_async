@@ -985,12 +985,26 @@ let abort_copy_in t ~reason =
       unexpected_msg_type msg_type [%sexp "aborting copy-in mode"]
   )
 
-let sync_after_query t =
+let close_unnamed_portal_and_statement_and_sync_after_query t =
   catch_write_errors t ~flush_message:Not_required ~f:(fun writer ->
+    (* Closing the portal & statement is not strictly necessary. The Portal is closed
+       anyway when the current transaction ends (be it due to the sync message, or the
+       COMMIT if we're inside a BEGIN/END block), and they're implicitly closed (before
+       being re-opened) when the unnamed portal/statement is next used (e.g., by the next
+       query). However, doing so frees resources more eagerly, which is good. *)
+    Protocol.Frontend.Writer.close writer (Portal Types.Portal_name.unnamed);
+    (* Note that closing a statement implicitly closes any open portals that were
+       constructed from it. *)
+    Protocol.Frontend.Writer.close writer (Statement Types.Statement_name.unnamed);
+    (* The sync message obviates the need for a flush message.
+       Note that if we're not within a BEGIN/END block, this commits the transaction. *)
     Protocol.Frontend.Writer.sync writer
   );
   read_messages t ~handle_message:(fun msg_type iobuf ->
     match msg_type with
+    | CloseComplete ->
+      Protocol.Backend.CloseComplete.consume iobuf;
+      Continue
     | ReadyForQuery ->
       (match Protocol.Backend.ReadyForQuery.consume iobuf with
        | Error err -> Protocol_error err
@@ -998,7 +1012,7 @@ let sync_after_query t =
     | ErrorResponse ->
       (match Protocol.Backend.ErrorResponse.consume iobuf with
        | Error err -> Protocol_error err
-       | Ok e -> protocol_error_s [%message "response to Sync was an error" ~_:(e : Error.t)])
+       | Ok e -> protocol_error_s [%message "response to close/sync was an error" ~_:(e : Error.t)])
     | msg_type ->
       unexpected_msg_type msg_type [%sexp "synchronising after query"]
   )
@@ -1036,9 +1050,8 @@ let internal_query t ?(parameters=[||]) ?pushback query_string ~handle_row =
             Continue
       )
   in
-  (* Note that if we're not within a BEGIN/END block, [sync_after_query] commits the
-     transaction. *)
-  let%bind sync_result = sync_after_query t in
+  (* Note that if we're not within a BEGIN/END block, this commits the transaction. *)
+  let%bind sync_result = close_unnamed_portal_and_statement_and_sync_after_query t in
   match (result, sync_result) with
   | (Connection_closed err, _)
   | (Done (Error err), _)
@@ -1094,7 +1107,7 @@ let query_expect_no_data t ?(parameters=[||]) query_string =
       | Done (Empty_query | Command_complete_without_output) ->
         return (Done (Ok ()))
     in
-    let%bind sync_result = sync_after_query t in
+    let%bind sync_result = close_unnamed_portal_and_statement_and_sync_after_query t in
     match (result, sync_result) with
     | (Connection_closed err, _)
     | (Done (Error err), _)
@@ -1184,7 +1197,7 @@ let internal_copy_in_raw t ?(parameters=[||]) query_string ~feed_data =
       in
       response_deferred
   in
-  let%bind sync_result = sync_after_query t in
+  let%bind sync_result = close_unnamed_portal_and_statement_and_sync_after_query t in
   match (result, sync_result) with
   | (Connection_closed err, _)
   | (Done (Error err), _)
