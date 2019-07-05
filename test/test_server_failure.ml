@@ -401,7 +401,7 @@ let%expect_test "invalid messages during query_expect_no_data" =
           ("Iobuf got invalid range"
            (((pos 0) (len 1))
             ((buf <opaque>) (lo_min 0) (lo 17) (hi 17) (hi_max 17)))
-           lib/core/src/iobuf.ml:35:2)))))
+           lib/core/src/iobuf.ml:38:2)))))
       close_finished is determined with an error
       (outer_result (Ok _)) |}]
   in
