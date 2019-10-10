@@ -1243,7 +1243,7 @@ let listen_to_notifications t ~channel ~f =
   let monitor = Monitor.current () in
   let subscriber =
     Bus.subscribe_exn
-      (Bus.read_only bus)
+      ( bus)
       [%here]
       ~f:(fun payload -> f ~payload)
       ~on_callback_raise:(fun error -> Monitor.send_exn monitor (Error.to_exn error))
