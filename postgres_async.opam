@@ -14,7 +14,7 @@ depends: [
   "async"
   "core"
   "ppx_jane"
-  "dune"     {>= "1.5.1"}
+  "dune"     {>= "2.0.0"}
 ]
 synopsis: "OCaml/async implementation of the postgres protocol (i.e., does not use C-bindings to libpq)"
 description: "
