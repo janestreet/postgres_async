@@ -13,8 +13,9 @@ depends: [
   "ocaml" {>= "4.08.0"}
   "async"
   "core"
+  "core_kernel"
   "ppx_jane"
-  "dune"     {>= "2.0.0"}
+  "dune"        {>= "2.0.0"}
 ]
 synopsis: "OCaml/async implementation of the postgres protocol (i.e., does not use C-bindings to libpq)"
 description: "
