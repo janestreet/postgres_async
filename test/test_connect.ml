@@ -169,7 +169,7 @@ let%expect_test "authentication method we don't support" =
 
 let%expect_test "connection refused" =
   (* bind, but don't listen or accept. *)
-  let socket = Core.Unix.socket ~domain:PF_INET ~kind:SOCK_STREAM ~protocol:0 in
+  let socket = Core.Unix.socket ~domain:PF_INET ~kind:SOCK_STREAM ~protocol:0 () in
   Core.Unix.bind socket ~addr:(ADDR_INET (Unix.Inet_addr.of_string "0.0.0.0", 0));
   let where_to_connect =
     match Core.Unix.getsockname socket with

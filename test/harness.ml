@@ -44,8 +44,8 @@ let fork_redirect_exec ~prog ~args ~stdouterr_file =
   match Unix.fork () with
   | `In_the_parent pid -> pid
   | `In_the_child ->
-    Unix.dup2 ~src:stdouterr_file ~dst:Unix.stdout;
-    Unix.dup2 ~src:stdouterr_file ~dst:Unix.stderr;
+    Unix.dup2 ~src:stdouterr_file ~dst:Unix.stdout ();
+    Unix.dup2 ~src:stdouterr_file ~dst:Unix.stderr ();
     never_returns (Unix.exec ~prog ~argv:(prog :: args) ())
 
 let create ?(extra_server_args=[]) () =
@@ -57,7 +57,7 @@ let create ?(extra_server_args=[]) () =
   in
   let get_postgres_output () = In_channel.read_all postgres_output_filename in
   (* Ask the OS to assign us a temporary port. *)
-  let temp_socket = Unix.socket ~domain:PF_INET ~kind:SOCK_STREAM ~protocol:0 in
+  let temp_socket = Unix.socket ~domain:PF_INET ~kind:SOCK_STREAM ~protocol:0 () in
   Unix.bind temp_socket ~addr:(ADDR_INET (Unix.Inet_addr.of_string "0.0.0.0", 0));
   let port =
     match Unix.getsockname temp_socket with
@@ -80,7 +80,7 @@ let create ?(extra_server_args=[]) () =
      A process asking for an ephemeral port on [127.0.0.1] with REUSEADDR set could
      possibly be handed our port. It's very unlikely that any process actually attempts
      this. *)
-  let temp_socket2 = Unix.socket ~domain:PF_INET ~kind:SOCK_STREAM ~protocol:0 in
+  let temp_socket2 = Unix.socket ~domain:PF_INET ~kind:SOCK_STREAM ~protocol:0 () in
   Unix.setsockopt temp_socket SO_REUSEADDR true;
   Unix.setsockopt temp_socket2 SO_REUSEADDR true;
   Unix.bind temp_socket2 ~addr:(ADDR_INET (Unix.Inet_addr.of_string "127.0.0.2", port));
