@@ -33,12 +33,9 @@ let pg_hba =
   ]
   |> String.concat ~sep:"\n"
 
-let socket_dir = "/tmp"
-
-let tempfiles_dir =
-  match Sys.getenv "TMPDIR" with
-  | None -> "/tmp"
-  | Some d -> d
+(* unix sockets must be under ~100 characters long, so we create [socket_dir] in /tmp *)
+let socket_dir = lazy (Filename.temp_dir ~in_dir:"/tmp" "postgres-async-test-harness" "")
+let tempfiles_dir = Filename.temp_dir_name
 
 let fork_redirect_exec ~prog ~args ~stdouterr_file =
   match Unix.fork () with
@@ -98,6 +95,7 @@ let create ?(extra_server_args=[]) () =
     raise exn
   | () ->
     Out_channel.write_all (datadir ^/ "pg_hba.conf") ~data:pg_hba;
+    let socket_dir = force socket_dir in
     let server_pid =
       let prog = force postgres_bins ^/ "postgres" in
       let args =
@@ -127,7 +125,7 @@ let create ?(extra_server_args=[]) () =
       let pid =
         Unix.fork_exec ()
           ~prog:"rm"
-          ~argv:["rm"; "-rf"; "--"; datadir; postgres_output_filename]
+          ~argv:["rm"; "-rf"; "--"; datadir; socket_dir; postgres_output_filename]
       in
       Unix.waitpid_exn pid
     );
