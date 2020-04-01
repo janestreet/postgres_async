@@ -408,15 +408,14 @@ let%expect_test "invalid messages during query_expect_no_data" =
         Error (
           "Failed to parse RowDescription" (
             exn (
-              "Iobuf got invalid range"
-              (((pos 0)
-                (len 1))
-               ((buf    <opaque>)
-                (lo_min 0)
-                (lo     17)
-                (hi     17)
-                (hi_max 17)))
-              lib/core/src/iobuf.ml:LINE:COL)))))
+              "Iobuf got invalid range" (
+                ((pos 0)
+                 (len 1))
+                ((buf    <opaque>)
+                 (lo_min 0)
+                 (lo     17)
+                 (hi     17)
+                 (hi_max 17))))))))
       close_finished is determined with an error
       (outer_result (Ok _)) |}]
   in
