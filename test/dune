@@ -1,4 +1,3 @@
 (library (name postgres_async_tests)
- (libraries core async expect_test_helpers_async expect_test_helpers_core
-  postgres_async)
+ (libraries core async expect_test_helpers_core postgres_async)
  (preprocess (pps ppx_jane)))
