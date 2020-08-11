@@ -27,15 +27,15 @@ let%expect_test "listen/notify" =
   Harness.with_connection_exn harness ~database:"postgres" (fun postgres ->
     let%bind () = print_notifications postgres ~channel:"channel_one" in
     let%bind () = print_notifications postgres ~channel:"channel-2" in
-    let%bind () = [%expect {| |}] in
+    [%expect {| |}];
     let sync1 = Bvar.wait saw_notification in
     let%bind () = query_exn postgres "NOTIFY channel_one" in
     let%bind () = sync1 in
-    let%bind () = [%expect {| (notification (channel channel_one) (payload "")) |}] in
+    [%expect {| (notification (channel channel_one) (payload "")) |}];
     let sync2 = Bvar.wait saw_notification in
     let%bind () = query_exn postgres "NOTIFY \"channel-2\", 'hello'" in
     let%bind () = sync2 in
-    let%bind () = [%expect {| (notification (channel channel-2) (payload hello)) |}] in
+    [%expect {| (notification (channel channel-2) (payload hello)) |}];
     let sync3 = Bvar.wait saw_notification in
     let%bind () =
       Harness.with_connection_exn harness ~database:"postgres" (fun postgres2 ->
@@ -43,9 +43,7 @@ let%expect_test "listen/notify" =
       )
     in
     let%bind () = sync3 in
-    let%bind () =
-      [%expect {| (notification (channel channel_one) (payload from-another-process)) |}]
-    in
+    [%expect {| (notification (channel channel_one) (payload from-another-process)) |}];
     let%bind () =
       Harness.with_connection_exn harness ~database:"postgres" (fun postgres2 ->
         let sync4 = Bvar.wait saw_notification in
@@ -57,11 +55,9 @@ let%expect_test "listen/notify" =
         return ()
       )
     in
-    let%bind () =
-      [%expect {|
+    [%expect {|
         (notification (channel channel-2) (payload m1))
-        (notification (channel channel-2) (payload m2)) |}]
-    in
+        (notification (channel channel-2) (payload m2)) |}];
     return ()
   )
 
@@ -89,10 +85,11 @@ let%expect_test "multiple listeners" =
     let%bind () = i1 in
     let%bind () = i2 in
     let%bind () = i3 in
-    [%expect {|
+    ([%expect {|
       (notification (channel a) (payload ""))
       (notification (channel a) (payload ""))
-      (notification (channel a) (payload "")) |}]
+      (notification (channel a) (payload "")) |}];
+     return ())
   )
 
 let%expect_test "notify with no listeners" =
@@ -115,9 +112,10 @@ let%expect_test "notify with no listeners" =
       let%bind () = query_exn postgres "LISTEN channel_three" in
       let%bind () = query_exn postgres "NOTIFY channel_three" in
       let%bind () = sync in
-      [%expect {|
+      ([%expect {|
         (LOG
          ("Postgres NotificationResponse on channel that no callbacks are listening to"
-          (channel channel_three))) |}]
+          (channel channel_three))) |}];
+       return ())
     )
   )

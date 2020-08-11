@@ -36,7 +36,7 @@ let print_table postgres =
 let%expect_test "copy_in_rows" =
   with_connection_exn (fun postgres ->
     let%bind () = create_table postgres "x" ["y integer primary key"; "z text"] in
-    let%bind () = [%expect {||}] in
+    [%expect {||}];
     let%bind result =
       let rows =
         Queue.of_list
@@ -56,12 +56,13 @@ let%expect_test "copy_in_rows" =
         )
     in
     Or_error.ok_exn result;
-    let%bind () = [%expect {| |}] in
+    [%expect {| |}];
     let%bind () = print_table postgres in
-    [%expect {|
+    ([%expect {|
       ((1) (one))
       ((2) ())
-      ((3) (three)) |}]
+      ((3) (three)) |}];
+     return ())
   )
 
 let%expect_test "copy_in_rows: nasty characters" =
@@ -69,7 +70,7 @@ let%expect_test "copy_in_rows: nasty characters" =
     let%bind () =
       create_table postgres "x" ["y integer primary key"; "z text"; "w bytea" ]
     in
-    let%bind () = [%expect {||}] in
+    [%expect {||}];
     let%bind result =
       let rows =
         Queue.of_list
@@ -100,9 +101,9 @@ let%expect_test "copy_in_rows: nasty characters" =
         )
     in
     Or_error.ok_exn result;
-    let%bind () = [%expect {| |}] in
+    [%expect {| |}];
     let%bind () = print_table postgres in
-    [%expect {|
+    ([%expect {|
       ((1) ("\n") ())
       ((2) ("\\N") ())
       ((3) ("\t") ())
@@ -116,7 +117,8 @@ let%expect_test "copy_in_rows: nasty characters" =
       ((11) () ("\\x61736466"))
       ((12) () ("\\x0a"))
       ((13) () ("\\x00"))
-      ((14) () ("\\x61")) |}]
+      ((14) () ("\\x61")) |}];
+     return ())
   )
 
 let%expect_test "copy_in_rows: nasty column names" =
@@ -137,7 +139,7 @@ let%expect_test "copy_in_rows: nasty column names" =
         |}
     in
     Or_error.ok_exn result;
-    let%bind () = [%expect {||}] in
+    [%expect {||}];
     let%bind result =
       let sent_row = ref false in
       Postgres_async.copy_in_rows
@@ -153,7 +155,7 @@ let%expect_test "copy_in_rows: nasty column names" =
         )
     in
     Or_error.ok_exn result;
-    let%bind () = [%expect {| |}] in
+    [%expect {| |}];
     let%bind result =
       Postgres_async.query
         postgres
@@ -165,19 +167,20 @@ let%expect_test "copy_in_rows: nasty column names" =
         )
     in
     Or_error.ok_exn result;
-    [%expect {|
+    ([%expect {|
       (k (1))
       ("y space" (A))
       ("z\"quote" (B))
       (year (C))
       (lowercase1 (D))
-      (UPPERCASE2 (E)) |}]
+      (UPPERCASE2 (E)) |}];
+     return ())
   )
 
 let%expect_test "copy_in_rows: lots of data" =
   with_connection_exn (fun postgres ->
     let%bind () = create_table postgres "x" ["y integer primary key"; "z text"] in
-    let%bind () = [%expect {||}] in
+    [%expect {||}];
     let%bind result =
       let counter = ref 0 in
       let sleeps = ref 0 in
@@ -200,7 +203,7 @@ let%expect_test "copy_in_rows: lots of data" =
         )
     in
     Or_error.ok_exn result;
-    let%bind () = [%expect {| |}] in
+    [%expect {| |}];
     let%bind result =
       Postgres_async.query
         postgres
@@ -211,9 +214,9 @@ let%expect_test "copy_in_rows: lots of data" =
         )
     in
     Or_error.ok_exn result;
-    let%bind () = [%expect {| (8192 1 8192 33558528 1024) |}] in
+    [%expect {| (8192 1 8192 33558528 1024) |}];
     print_s [%sexp (8192 * 8193 / 2 : int)];
-    let%bind () = [%expect {| 33558528 |}] in
+    [%expect {| 33558528 |}];
     return ()
   )
 
@@ -222,8 +225,7 @@ let%expect_test "raw: weird chunking" =
     let%bind () =
       create_table postgres "x" ["y integer primary key"; "z text not null"]
     in
-    let%bind () = [%expect {||}] in
-    (* weird chunking is fine, it doesn't need to correspond to rows: *)
+    [%expect {||}];(* weird chunking is fine, it doesn't need to correspond to rows: *)
     let%bind result =
       let chunks = Queue.of_list [ "1\tone\n"; "2\t"; "two"; "\n" ] in
       Postgres_async.copy_in_raw
@@ -236,11 +238,12 @@ let%expect_test "raw: weird chunking" =
         )
     in
     Or_error.ok_exn result;
-    let%bind () = [%expect {||}] in
+    [%expect {||}];
     let%bind () = print_table postgres in
-    [%expect {|
+    ([%expect {|
       ((1) (one))
-      ((2) (two)) |}]
+      ((2) (two)) |}];
+     return ())
   )
 
 let%expect_test "aborting" =
@@ -248,7 +251,7 @@ let%expect_test "aborting" =
     let%bind () =
       create_table postgres "x" ["y integer primary key"; "z text not null"]
     in
-    let%bind () = [%expect {||}] in
+    [%expect {||}];
     let%bind result =
       let count = ref 0 in
       Postgres_async.copy_in_raw
@@ -269,10 +272,8 @@ let%expect_test "aborting" =
      | Error err ->
        let err = Utils.delete_unstable_bits_of_error [%sexp (err : Error.t)] in
        print_s err);
-    let%bind () =
-      (* 57014: query_cancelled. *)
-      [%expect {| ((severity ERROR) (code 57014)) |}]
-    in
+    (* 57014: query_cancelled. *)[%expect {| ((severity ERROR) (code 57014)) |}];
     let%bind () = print_table postgres in
-    [%expect {| |}]
+    ([%expect {| |}];
+     return ())
   )

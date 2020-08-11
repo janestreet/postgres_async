@@ -57,13 +57,11 @@ let%expect_test "terminate backend" =
           ~handle_row:(fun ~column_names:_ ~values:_ -> ())
       in
       print_or_error result;
-      let%bind () =
-        [%expect {|
+      [%expect {|
           (Error (
             "Error during query execution (despite parsing ok)"
             ((severity FATAL)
-             (code     57P01)))) |}]
-      in
+             (code     57P01)))) |}];
       let%bind result = Postgres_async.query_expect_no_data postgres "" in
       [%test_pred: unit Or_error.t]
         (fun r ->
@@ -74,12 +72,9 @@ let%expect_test "terminate backend" =
       return ()
     )
   in
-  let%bind () =
-    [%expect {| ("failed to close" (error <omitted>)) |}]
-  in
-  (* Here's a test where our backend is externally terminated while we're idle; a little
-     tricky to get right, but this one is actually deterministic (because we're not trying
-     to write at the same time as the connection is closed on us). *)
+  [%expect {| ("failed to close" (error <omitted>)) |}];(* Here's a test where our backend is externally terminated while we're idle; a little
+                                                           tricky to get right, but this one is actually deterministic (because we're not trying
+                                                           to write at the same time as the connection is closed on us). *)
   let%bind () =
     with_connection (fun postgres ->
       let backend_pid = Set_once.create () in
@@ -110,37 +105,31 @@ let%expect_test "terminate backend" =
       in
       let%bind result = Postgres_async.close_finished postgres in
       print_or_error result;
-      let%bind () =
-        [%expect {|
+      [%expect {|
           (Error (
             "ErrorResponse received asynchronously, assuming connection is dead"
             ((severity FATAL)
-             (code     57P01)))) |}]
-      in
+             (code     57P01)))) |}];
       let%bind result =
         Postgres_async.query_expect_no_data postgres ""
       in
       print_or_error result;
-      let%bind () =
-        [%expect {|
+      [%expect {|
           (Error (
             "query issued against previously-failed connection"
             (original_error (
               "ErrorResponse received asynchronously, assuming connection is dead"
               ((severity FATAL)
-               (code     57P01)))))) |}]
-      in
+               (code     57P01)))))) |}];
       return ()
     )
   in
-  let%bind () =
-    [%expect {|
+  [%expect {|
       ("failed to close" (
         error (
           "ErrorResponse received asynchronously, assuming connection is dead"
           ((severity FATAL)
-           (code     57P01))))) |}]
-  in
+           (code     57P01))))) |}];
   return ()
 
 let accept_login = "R\x00\x00\x00\x08\x00\x00\x00\x00Z\x00\x00\x00\x05I"
@@ -198,55 +187,35 @@ let%expect_test "invaild messages during login" =
   in
   (* demonstrate that our TCP server works: *)
   let%bind () = try_connect accept_login in
-  let%bind () =
-    [%expect {| (Ok _) |}]
-  in
-  (* nonsense message length. *)
+  [%expect {| (Ok _) |}];(* nonsense message length. *)
   let%bind () = try_connect "R\x00\x00\x00\x03" in
-  let%bind () =
-    [%expect {|
-      (Error ("Nonsense message length in header" 4)) |}]
-  in
-  (* authentication method we don't recognise *)
+  [%expect {|
+      (Error ("Nonsense message length in header" 4)) |}];(* authentication method we don't recognise *)
   let%bind () = try_connect "R\x00\x00\x00\x08\x00\x00\x00\xFF" in
-  let%bind () =
-    [%expect {|
+  [%expect {|
       (Error (
         "Failed to parse AuthenticationRequest" (
-          exn ("AuthenticationRequest unrecognised type" (other 255))))) |}]
-  in
-  (* message type we don't recognise *)
+          exn ("AuthenticationRequest unrecognised type" (other 255))))) |}];(* message type we don't recognise *)
   let%bind () = try_connect "x\x00\x00\x00\x04" in
-  let%bind () =
-    [%expect {|
-      (Error ("Unrecognised message type character" (other x))) |}]
-  in
-  (* message type we recognise but don't expect *)
+  [%expect {|
+      (Error ("Unrecognised message type character" (other x))) |}];(* message type we recognise but don't expect *)
   let%bind () = try_connect "s\x00\x00\x00\x04" in
-  let%bind () =
-    [%expect {|
+  [%expect {|
       (Error (
         "Unexpected message type"
         (msg_type PortalSuspended)
-        (state    "logging in"))) |}]
-  in
-  (* very long message *)
+        (state    "logging in"))) |}];(* very long message *)
   let%bind () =
     try_connect (
       "R\x08\x00\x00\x00"
       ^ String.init (1024 * 1024) ~f:(fun _ -> '\x00')
     )
   in
-  let%bind () =
-    [%expect {|
-      (Error ("Message too long" (iobuf_length 1048581))) |}]
-  in
-  (* message truncated by EOF *)
+  [%expect {|
+      (Error ("Message too long" (iobuf_length 1048581))) |}];(* message truncated by EOF *)
   let%bind () = try_connect "R\x00\x00\x00\x05" in
-  let%bind () =
-    [%expect {|
-      (Error ("Unexpected EOF" (unconsumed_bytes 5))) |}]
-  in
+  [%expect {|
+      (Error ("Unexpected EOF" (unconsumed_bytes 5))) |}];
   return ()
 
 let%expect_test "invalid messages during query_expect_no_data" =
@@ -333,37 +302,28 @@ let%expect_test "invalid messages during query_expect_no_data" =
       ^ readyforquery
     )
   in
-  let%bind () =
-    [%expect {|
+  [%expect {|
       (r1 (Ok _))
-      (outer_result (Ok _)) |}]
-  in
-  (* unexpected or unrecognised message types at various stages. *)
+      (outer_result (Ok _)) |}];(* unexpected or unrecognised message types at various stages. *)
   let%bind () = try_query "x\x00\x00\x00\x04" in
-  let%bind () =
-    [%expect {|
+  [%expect {|
       (r1 (Error ("Unrecognised message type character" (other x))))
       close_finished is determined with an error
-      (outer_result (Ok _)) |}]
-  in
+      (outer_result (Ok _)) |}];
   let%bind () = try_query (parsecomplete ^ "s\x00\x00\x00\x04") in
-  let%bind () =
-    [%expect {|
+  [%expect {|
       (r1 (
         Error (
           "Unexpected message type"
           (msg_type PortalSuspended)
           (state    Binding))))
       close_finished is determined with an error
-      (outer_result (Ok _)) |}]
-  in
+      (outer_result (Ok _)) |}];
   let%bind () = try_query (parsecomplete ^ bindcomplete ^ "x\x00\x00\x00\x04") in
-  let%bind () =
-    [%expect {|
+  [%expect {|
       (r1 (Error ("Unrecognised message type character" (other x))))
       close_finished is determined with an error
-      (outer_result (Ok _)) |}]
-  in
+      (outer_result (Ok _)) |}];
   let%bind () =
     try_query (
       parsecomplete
@@ -372,29 +332,23 @@ let%expect_test "invalid messages during query_expect_no_data" =
       ^ "s\x00\x00\x00\x04"
     )
   in
-  let%bind () =
-    [%expect {|
+  [%expect {|
       (r1 (
         Error (
           "Unexpected message type"
           (msg_type PortalSuspended)
           (state    "reading DataRows"))))
       close_finished is determined with an error
-      (outer_result (Ok _)) |}]
-  in
-  (* second query fails cleanly too: *)
+      (outer_result (Ok _)) |}];(* second query fails cleanly too: *)
   let%bind () = try_query "x\x00\x00\x00\x04" ~show_second_result:true in
-  let%bind () =
-    [%expect {|
+  [%expect {|
       (r1 (Error ("Unrecognised message type character" (other x))))
       close_finished is determined with an error
       (r2 (
         Error (
           "query issued against previously-failed connection"
           (original_error ("Unrecognised message type character" (other x))))))
-      (outer_result (Ok _)) |}]
-  in
-  (* rowdescription with junk in *)
+      (outer_result (Ok _)) |}];(* rowdescription with junk in *)
   let%bind () =
     try_query (
       parsecomplete
@@ -402,8 +356,7 @@ let%expect_test "invalid messages during query_expect_no_data" =
       ^ "T\x00\x00\x00\x06\x0f\xff"
     )
   in
-  let%bind () =
-    [%expect {|
+  [%expect {|
       (r1 (
         Error (
           "Failed to parse RowDescription" (
@@ -417,9 +370,7 @@ let%expect_test "invalid messages during query_expect_no_data" =
                  (hi     17)
                  (hi_max 17))))))))
       close_finished is determined with an error
-      (outer_result (Ok _)) |}]
-  in
-  (* datarow with mismatched number of fields vs. row desc. *)
+      (outer_result (Ok _)) |}];(* datarow with mismatched number of fields vs. row desc. *)
   let%bind () =
     let z18 = String.init 18 ~f:(fun _ -> '\x00') in
     try_query (
@@ -431,17 +382,14 @@ let%expect_test "invalid messages during query_expect_no_data" =
       ^ readyforquery
     )
   in
-  let%bind () =
-    [%expect {|
+  [%expect {|
       (r1 (
         Error (
           "number of columns in DataRow message did not match RowDescription"
           (column_names (A B))
           (values ((a))))))
       close_finished is determined with an error
-      (outer_result (Ok _)) |}]
-  in
-  (* very long datarow *)
+      (outer_result (Ok _)) |}];(* very long datarow *)
   let%bind () =
     try_query (
       parsecomplete
@@ -450,13 +398,10 @@ let%expect_test "invalid messages during query_expect_no_data" =
       ^ "D\x08\x00\x00\x00" ^ String.init (1024 * 1024) ~f:(fun _ -> '\x00')
     )
   in
-  let%bind () =
-    [%expect {|
+  [%expect {|
       (r1 (Error ("Message too long" (iobuf_length 1048581))))
       close_finished is determined with an error
-      (outer_result (Ok _)) |}]
-  in
-  (* message truncated by EOF *)
+      (outer_result (Ok _)) |}];(* message truncated by EOF *)
   let%bind () =
     try_query (
       parsecomplete
@@ -465,12 +410,10 @@ let%expect_test "invalid messages during query_expect_no_data" =
       ^ "D\x00\x00\x00\x10"
     )
   in
-  let%bind () =
-    [%expect {|
+  [%expect {|
       (r1 (Error ("Unexpected EOF" (unconsumed_bytes 5))))
       close_finished is determined with an error
-      (outer_result (Ok _)) |}]
-  in
+      (outer_result (Ok _)) |}];
   return ()
 
 let%expect_test "asynchronous EOF" =
@@ -506,12 +449,13 @@ let%expect_test "asynchronous EOF" =
         handle_connection
     in
     print_s [%message (outer_result : _ Or_error.t)];
-    [%expect {|
+    ([%expect {|
       in connection handler
       (close_finished_deferred Empty)
       now sending EOF
       (close_finished (Error "Unexpected EOF (no unconsumed messages)"))
-      (outer_result (Ok _)) |}]
+      (outer_result (Ok _)) |}];
+     return ())
   )
 
 let%expect_test "asynchronous writer failure during login" =
@@ -536,7 +480,7 @@ let%expect_test "asynchronous writer failure during login" =
       in
       let result = Utils.delete_unstable_bits_of_error [%sexp (result : _ Or_error.t)] in
       print_s result;
-      [%expect {|
+      ([%expect {|
         (Error (
           "Writer failed asynchronously" (
             exn (
@@ -544,7 +488,8 @@ let%expect_test "asynchronous writer failure during login" =
               ("Writer error from inner_monitor"
                 (Unix.Unix_error "Broken pipe" writev_assume_fd_is_nonblocking "")
                 <omitted>)
-              ("Caught by monitor Writer.monitor"))))) |}]
+              ("Caught by monitor Writer.monitor"))))) |}];
+       return ())
     )
 
 let%expect_test "asynchronous writer failure during query" =
@@ -574,7 +519,7 @@ let%expect_test "asynchronous writer failure during query" =
           handle_connection
       in
       print_s [%message (outer_result : unit Or_error.t)];
-      [%expect {|
+      ([%expect {|
         connected
         (result (
           Error (
@@ -585,5 +530,6 @@ let%expect_test "asynchronous writer failure during query" =
                   (Unix.Unix_error "Broken pipe" writev_assume_fd_is_nonblocking "")
                   <omitted>)
                 ("Caught by monitor Writer.monitor"))))))
-        (outer_result (Ok ())) |}]
+        (outer_result (Ok ())) |}];
+       return ())
     )

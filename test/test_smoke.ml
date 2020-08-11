@@ -15,7 +15,8 @@ let%expect_test "check that basic query functionality works" =
         )
     in
     Or_error.ok_exn result;
-    [%expect {| (values ((1234))) |}]
+    ([%expect {| (values ((1234))) |}];
+     return ())
   )
 
 let%expect_test "check that fundamental copy-in features work" =
@@ -26,7 +27,7 @@ let%expect_test "check that fundamental copy-in features work" =
         "CREATE TEMPORARY TABLE x ( y integer PRIMARY KEY, z text )"
     in
     Or_error.ok_exn result;
-    let%bind () = [%expect {||}] in
+    [%expect {||}];
     let%bind result =
       let countdown = ref 10 in
       Postgres_async.copy_in_rows
@@ -45,7 +46,7 @@ let%expect_test "check that fundamental copy-in features work" =
         )
     in
     Or_error.ok_exn result;
-    let%bind () = [%expect {||}] in
+    [%expect {||}];
     let%bind result =
       Postgres_async.query
         postgres
@@ -55,7 +56,7 @@ let%expect_test "check that fundamental copy-in features work" =
         )
     in
     Or_error.ok_exn result;
-    [%expect {|
+    ([%expect {|
       ((y (1)) (z ()))
       ((y (2)) (z (asdf-2)))
       ((y (3)) (z ()))
@@ -65,5 +66,6 @@ let%expect_test "check that fundamental copy-in features work" =
       ((y (7)) (z ()))
       ((y (8)) (z (asdf-8)))
       ((y (9)) (z ()))
-      ((y (10)) (z (asdf-10))) |}]
+      ((y (10)) (z (asdf-10))) |}];
+     return ())
   )
