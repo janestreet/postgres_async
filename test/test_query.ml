@@ -39,21 +39,21 @@ let%expect_test "column names and ordering" =
     in
     let%bind () = query_exn "SELECT * FROM a ORDER BY y" in
     [%expect {|
-        ((x ("2000-01-01 00:00:00")) (y (1)) (z ("test string")))
-        ((x ("2000-01-01 00:00:00")) (y (5)) (z ( "nasty\
-                                                 \nstring\t'\",x")))
-        ((x ("2019-03-14 00:00:00")) (y (10)) (z ())) |}];
+      ((x ("2000-01-01 00:00:00")) (y (1)) (z ("test string")))
+      ((x ("2000-01-01 00:00:00")) (y (5)) (z ( "nasty\
+                                               \nstring\t'\",x")))
+      ((x ("2019-03-14 00:00:00")) (y (10)) (z ())) |}];
     let%bind () = query_exn "SELECT z, x FROM a ORDER BY y" in
     [%expect {|
-        ((z ("test string")) (x ("2000-01-01 00:00:00")))
-        ((z ( "nasty\
-             \nstring\t'\",x")) (x ("2000-01-01 00:00:00")))
-        ((z ()) (x ("2019-03-14 00:00:00"))) |}];
+      ((z ("test string")) (x ("2000-01-01 00:00:00")))
+      ((z ( "nasty\
+           \nstring\t'\",x")) (x ("2000-01-01 00:00:00")))
+      ((z ()) (x ("2019-03-14 00:00:00"))) |}];
     let%bind () = query_exn "SELECT x as moo, y FROM a ORDER BY y" in
     [%expect {|
-        ((moo ("2000-01-01 00:00:00")) (y (1)))
-        ((moo ("2000-01-01 00:00:00")) (y (5)))
-        ((moo ("2019-03-14 00:00:00")) (y (10))) |}];
+      ((moo ("2000-01-01 00:00:00")) (y (1)))
+      ((moo ("2000-01-01 00:00:00")) (y (5)))
+      ((moo ("2019-03-14 00:00:00")) (y (10))) |}];
     return ()
   )
 
@@ -72,15 +72,15 @@ let%expect_test "parameters" =
         ~parameters:[| Some "1"; Some "-5"; None; Some "1000000" |]
     in
     [%expect {|
-        ((1) (-5))
-        ((-5) ())
-        ((1000000) (1000000)) |}];
+      ((1) (-5))
+      ((-5) ())
+      ((1000000) (1000000)) |}];
     let%bind () =
       query_exn "SELECT $1::text" ~parameters:[|Some "nasty\nstring\t''\",x"|]
     in
     [%expect {|
-        (( "nasty\
-          \nstring\t''\",x")) |}];
+      (( "nasty\
+        \nstring\t''\",x")) |}];
     let%bind () =
       query_exn "CREATE TEMPORARY TABLE c ( x integer, y text )"
     in
@@ -92,15 +92,14 @@ let%expect_test "parameters" =
     in
     let%bind () = query_exn "SELECT * FROM c" in
     [%expect {|
-        ((5) (five))
-        ((10) ()) |}];
+      ((5) (five))
+      ((10) ()) |}];
     let%bind () =
       query_exn
         "UPDATE c SET y = 'ten' WHERE x = $1 RETURNING x, y"
         ~parameters:[| Some "10" |]
     in
-    [%expect {|
-        ((10) (ten)) |}];
+    [%expect {| ((10) (ten)) |}];
     return ()
   )
 
@@ -142,32 +141,36 @@ let%expect_test "failures are reported gracefully and don't kill the connection"
     in
     let%bind () = query "syntactically invalid" in
     [%expect {|
-        (Error
-         ("Postgres Server Error" (state Parsing) ((severity ERROR) (code 42601)))) |}];(* but we can still use the connection just fine *)
+      (Error
+       ("Postgres Server Error (state=Parsing)" ((severity ERROR) (code 42601)))) |}];
+    (* but we can still use the connection just fine *)
     let%bind () = query "SELECT 1" in
     [%expect {|
-        (row ((1)))
-        OK |}];(* let's try errors at other stages. *)
+      (row ((1)))
+      OK |}];
+    (* let's try errors at other stages. *)
     let%bind () = query "SELECT $1::int" ~parameters:[|Some "a"|] in
     [%expect {|
-        (Error
-         ("Postgres Server Error" (state Binding) ((severity ERROR) (code 22P02)))) |}];
+      (Error
+       ("Postgres Server Error (state=Binding)" ((severity ERROR) (code 22P02)))) |}];
     let%bind () = query "DO $$ BEGIN RAISE 'hi'; END $$" in
     [%expect {|
-        (Error
-         ("Postgres Server Error" (state Executing) ((severity ERROR) (code P0001)))) |}];
+      (Error
+       ("Postgres Server Error (state=Executing)" ((severity ERROR) (code P0001)))) |}];
     let%bind () = query "SELECT 'everything is fine'" in
     [%expect {|
-        (row (("everything is fine")))
-        OK |}];(* let's try executing a sql statement "that is not a query" *)
+      (row (("everything is fine")))
+      OK |}];
+    (* let's try executing a sql statement "that is not a query" *)
     let%bind () = query "CREATE TEMPORARY TABLE c ( x integer )" in
     [%expect {| OK |}];
     let%bind () = query "COPY c FROM STDIN" in
     [%expect {|
-        (Error "COPY FROM STDIN is not appropriate for [Postgres_async.query]") |}];
+      (Error "COPY FROM STDIN is not appropriate for [Postgres_async.query]") |}];
     let%bind () = query "COPY c TO STDOUT" in
     [%expect {|
-        (Error "COPY TO STDOUT is not appropriate for [Postgres_async.query]") |}];(* note that our COPY c from STDIN would have otherwise worked: *)
+      (Error "COPY TO STDOUT is not appropriate for [Postgres_async.query]") |}];
+    (* note that our COPY c from STDIN would have otherwise worked: *)
     let%bind result =
       let once = ref false in
       Postgres_async.copy_in_raw
@@ -185,19 +188,21 @@ let%expect_test "failures are reported gracefully and don't kill the connection"
     (* and the connection is certainly still fine. *)
     let%bind () = query "SELECT * FROM c" in
     [%expect {|
-        (row ((10)))
-        OK |}];(* note that in the case of a side-effecting copy-out, it is allowed to run to
-                  completion despite us returning the error (the alternative is killing the
-                  connection, or preemptively wrapping everything in begin/commit, which would be
-                  annoying to implement and not worth it) *)
+      (row ((10)))
+      OK |}];
+    (* note that in the case of a side-effecting copy-out, it is allowed to run to
+       completion despite us returning the error (the alternative is killing the
+       connection, or preemptively wrapping everything in begin/commit, which would be
+       annoying to implement and not worth it) *)
     let%bind () = query "COPY (INSERT INTO c (x) VALUES (20) RETURNING x) TO STDOUT" in
     [%expect {|
-        (Error "COPY TO STDOUT is not appropriate for [Postgres_async.query]") |}];(* Observe that the values were in fact inserted: *)
+      (Error "COPY TO STDOUT is not appropriate for [Postgres_async.query]") |}];
+    (* Observe that the values were in fact inserted: *)
     let%bind () = query "SELECT * FROM c ORDER BY x" in
     [%expect {|
-        (row ((10)))
-        (row ((20)))
-        OK |}];
+      (row ((10)))
+      (row ((20)))
+      OK |}];
     return ()
   )
 
@@ -213,7 +218,8 @@ let%expect_test "by default each statement runs in its own transaction" =
     let%bind () = query_exn postgres "INSERT INTO x VALUES (1) RETURNING y" in
     [%expect {| ((1)) |}];
     let%bind () = query_exn postgres "SELECT COUNT(*) FROM x" in
-    [%expect {| ((0)) |}];(* but if we do have a transaction... *)
+    [%expect {| ((0)) |}];
+    (* but if we do have a transaction... *)
     let%bind () = query_exn postgres "BEGIN" in
     let%bind () = query_exn postgres "INSERT INTO x VALUES (1) RETURNING y" in
     [%expect {| ((1)) |}];
@@ -278,14 +284,14 @@ let make_very_large_table_x postgres =
     query_exn
       postgres
       {|
-          DO $$ BEGIN
-            CREATE TEMPORARY TABLE x ( y integer, z text );
-            INSERT INTO x (y) VALUES (0);
-            FOR i IN 0..15 LOOP
-              INSERT INTO x (y) SELECT power(2, i) + y FROM x;
-            END LOOP;
-          END $$
-        |}
+        DO $$ BEGIN
+          CREATE TEMPORARY TABLE x ( y integer, z text );
+          INSERT INTO x (y) VALUES (0);
+          FOR i IN 0..15 LOOP
+            INSERT INTO x (y) SELECT power(2, i) + y FROM x;
+          END LOOP;
+        END $$
+      |}
   in
   (* now make the rows big (so, ~65Mb) *)
   let%bind () =
@@ -335,7 +341,8 @@ let%expect_test "pushback" =
     let%bind result = query_done_deferred in
     Or_error.ok_exn result;
     print_s [%message "query complete" (rows_handled : int ref)];
-    [%expect {| ("query complete" (rows_handled 65536)) |}];(* There will have been many many calls to pushback, since the result is big. *)
+    [%expect {| ("query complete" (rows_handled 65536)) |}];
+    (* There will have been many many calls to pushback, since the result is big. *)
     assert (!calls_to_pushback > 10);
     return ()
   )
@@ -361,30 +368,33 @@ let%expect_test "query expect no data" =
     let%bind () = query_expect_no_data "SELECT * FROM c" in
     [%expect {| OK |}];
     let%bind () = query_expect_no_data "INSERT INTO c (x) VALUES (10)" in
-    [%expect {| OK |}];(* These are not fine. *)
+    [%expect {| OK |}];
+    (* These are not fine. *)
     let%bind () = query_expect_no_data "SELECT 1" in
     [%expect {| (Error "query unexpectedly produced rows") |}];
     let%bind () = query_expect_no_data "COPY c FROM STDIN" in
     [%expect {|
-        (Error "[Postgres_async.query_expect_no_data]: query attempted COPY IN") |}];
+      (Error "[Postgres_async.query_expect_no_data]: query attempted COPY IN") |}];
     let%bind () = query_expect_no_data "COPY c TO STDOUT" in
     [%expect {|
-        (Error "[Postgres_async.query_expect_no_data]: query attempted COPY OUT") |}];(* Note that queries with side effects are currently allowed to run to completion
-                                                                                         despite an error being returned. See the comment by the similar tests for [query]
-                                                                                         for details. *)
+      (Error "[Postgres_async.query_expect_no_data]: query attempted COPY OUT") |}];
+    (* Note that queries with side effects are currently allowed to run to completion
+       despite an error being returned. See the comment by the similar tests for [query]
+       for details. *)
     let%bind () = query_expect_no_data "INSERT INTO c (x) VALUES (20) RETURNING x" in
     [%expect {|
-        (Error "query unexpectedly produced rows") |}];
+      (Error "query unexpectedly produced rows") |}];
     let%bind () =
       query_expect_no_data "COPY (INSERT INTO c (x) VALUES (20) RETURNING x) TO STDOUT"
     in
     [%expect {|
-        (Error "[Postgres_async.query_expect_no_data]: query attempted COPY OUT") |}];(* Observe that the values were in fact inserted: *)
+      (Error "[Postgres_async.query_expect_no_data]: query attempted COPY OUT") |}];
+    (* Observe that the values were in fact inserted: *)
     let%bind () = query_exn postgres "SELECT * FROM c ORDER BY x" in
     [%expect {|
-        ((10))
-        ((20))
-        ((20)) |}];
+      ((10))
+      ((20))
+      ((20)) |}];
     return ()
   )
 
@@ -406,26 +416,16 @@ let%expect_test "insane number of parameters" =
     | Error err ->
       let err = Utils.delete_unstable_bits_of_error (Error.sexp_of_t err) in
       print_s [%message "Error" ~_:(err : Sexp.t)];
-      ([%expect {|
+      [%expect {|
         (Error
          ("Writer.write_gen_whole: error writing value"
           (exn (Failure "int16 out of range: 100000")))) |}];
-       return ())
+      return ()
   )
 
 let%expect_test "query terminated mid execution" =
   with_connection_exn (fun postgres ->
-    let backend_pid = Set_once.create () in
-    let%bind result =
-      Postgres_async.query
-        postgres
-        "SELECT pg_backend_pid()"
-        ~handle_row:(fun ~column_names:_ ~values ->
-          Set_once.set_exn backend_pid [%here] values.(0)
-        )
-    in
-    Or_error.ok_exn result;
-    let backend_pid = Set_once.get_exn backend_pid [%here] in
+    let%bind backend_pid = Utils.pg_backend_pid postgres in
     let%bind () = make_very_large_table_x postgres in
     let rows_handled = ref 0 in
     let reached_10000_rows = Ivar.create () in
@@ -449,7 +449,7 @@ let%expect_test "query terminated mid execution" =
         query_exn
           postgres2
           "SELECT pg_cancel_backend($1)"
-          ~parameters:[|backend_pid|]
+          ~parameters:[|Some backend_pid|]
       )
     in
     [%expect {| ((t)) |}];
@@ -463,9 +463,9 @@ let%expect_test "query terminated mid execution" =
         return ()
     in
     [%expect {|
-        (Error
-         ("Error during query execution (despite parsing ok)"
-          ((severity ERROR) (code 57014)))) |}];
+      (Error
+       ("Error during query execution (despite parsing ok)"
+        ((severity ERROR) (code 57014)))) |}];
     assert (!rows_handled < 50000);
     (* note that the connection remains healthy. *)
     let%bind () = query_exn postgres "SELECT 1" in

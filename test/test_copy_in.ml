@@ -58,11 +58,11 @@ let%expect_test "copy_in_rows" =
     Or_error.ok_exn result;
     [%expect {| |}];
     let%bind () = print_table postgres in
-    ([%expect {|
+    [%expect {|
       ((1) (one))
       ((2) ())
       ((3) (three)) |}];
-     return ())
+    return ()
   )
 
 let%expect_test "copy_in_rows: nasty characters" =
@@ -103,7 +103,7 @@ let%expect_test "copy_in_rows: nasty characters" =
     Or_error.ok_exn result;
     [%expect {| |}];
     let%bind () = print_table postgres in
-    ([%expect {|
+    [%expect {|
       ((1) ("\n") ())
       ((2) ("\\N") ())
       ((3) ("\t") ())
@@ -118,7 +118,7 @@ let%expect_test "copy_in_rows: nasty characters" =
       ((12) () ("\\x0a"))
       ((13) () ("\\x00"))
       ((14) () ("\\x61")) |}];
-     return ())
+    return ()
   )
 
 let%expect_test "copy_in_rows: nasty column names" =
@@ -167,14 +167,14 @@ let%expect_test "copy_in_rows: nasty column names" =
         )
     in
     Or_error.ok_exn result;
-    ([%expect {|
+    [%expect {|
       (k (1))
       ("y space" (A))
       ("z\"quote" (B))
       (year (C))
       (lowercase1 (D))
       (UPPERCASE2 (E)) |}];
-     return ())
+    return ()
   )
 
 let%expect_test "copy_in_rows: lots of data" =
@@ -225,7 +225,8 @@ let%expect_test "raw: weird chunking" =
     let%bind () =
       create_table postgres "x" ["y integer primary key"; "z text not null"]
     in
-    [%expect {||}];(* weird chunking is fine, it doesn't need to correspond to rows: *)
+    [%expect {||}];
+    (* weird chunking is fine, it doesn't need to correspond to rows: *)
     let%bind result =
       let chunks = Queue.of_list [ "1\tone\n"; "2\t"; "two"; "\n" ] in
       Postgres_async.copy_in_raw
@@ -240,10 +241,10 @@ let%expect_test "raw: weird chunking" =
     Or_error.ok_exn result;
     [%expect {||}];
     let%bind () = print_table postgres in
-    ([%expect {|
+    [%expect {|
       ((1) (one))
       ((2) (two)) |}];
-     return ())
+    return ()
   )
 
 let%expect_test "aborting" =
@@ -272,8 +273,9 @@ let%expect_test "aborting" =
      | Error err ->
        let err = Utils.delete_unstable_bits_of_error [%sexp (err : Error.t)] in
        print_s err);
-    (* 57014: query_cancelled. *)[%expect {| ((severity ERROR) (code 57014)) |}];
+    (* 57014: query_cancelled. *)
+    [%expect {| ((severity ERROR) (code 57014)) |}];
     let%bind () = print_table postgres in
-    ([%expect {| |}];
-     return ())
+    [%expect {| |}];
+    return ()
   )

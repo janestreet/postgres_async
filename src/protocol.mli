@@ -111,7 +111,8 @@ module Backend : sig
 
   type focus_on_message_error =
     | Unknown_message_type of char
-    | Iobuf_too_short
+    | Iobuf_too_short_for_header
+    | Iobuf_too_short_for_message of { message_length : int }
     | Nonsense_message_length of int
 
   val focus_on_message
@@ -119,13 +120,19 @@ module Backend : sig
     -> (constructor, focus_on_message_error) Result.t
 
   module ErrorResponse : sig
-    type t = Error.t
+    type t =
+      { error : Error.t
+      ; error_code : string
+      }
 
     val consume : ([> read], Iobuf.seek) Iobuf.t -> t Or_error.t
   end
 
   module NoticeResponse : sig
-    type t = Info.t
+    type t =
+      { info : Info.t
+      ; error_code : string
+      }
 
     val consume : ([> read], Iobuf.seek) Iobuf.t -> t Or_error.t
   end

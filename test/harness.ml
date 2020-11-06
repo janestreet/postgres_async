@@ -186,6 +186,7 @@ let with_connection_exn t ?(user="postgres") ~database func =
       ~user
       ~server:(where_to_connect t)
       ~database
+      ~on_handler_exception:`Raise
       func
   with
   | Ok () -> return ()

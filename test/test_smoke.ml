@@ -15,8 +15,8 @@ let%expect_test "check that basic query functionality works" =
         )
     in
     Or_error.ok_exn result;
-    ([%expect {| (values ((1234))) |}];
-     return ())
+    [%expect {| (values ((1234))) |}];
+    return ()
   )
 
 let%expect_test "check that fundamental copy-in features work" =
@@ -56,7 +56,7 @@ let%expect_test "check that fundamental copy-in features work" =
         )
     in
     Or_error.ok_exn result;
-    ([%expect {|
+    [%expect {|
       ((y (1)) (z ()))
       ((y (2)) (z (asdf-2)))
       ((y (3)) (z ()))
@@ -67,5 +67,5 @@ let%expect_test "check that fundamental copy-in features work" =
       ((y (8)) (z (asdf-8)))
       ((y (9)) (z ()))
       ((y (10)) (z (asdf-10))) |}];
-     return ())
+    return ()
   )

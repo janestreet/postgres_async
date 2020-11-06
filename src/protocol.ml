@@ -413,7 +413,8 @@ module Backend = struct
 
   type focus_on_message_error =
     | Unknown_message_type of char
-    | Iobuf_too_short
+    | Iobuf_too_short_for_header
+    | Iobuf_too_short_for_message of { message_length : int }
     | Nonsense_message_length of int
 
   let constructor_of_char =
@@ -446,13 +447,13 @@ module Backend = struct
   let focus_on_message iobuf =
     let iobuf_length = Iobuf.length iobuf in
     if iobuf_length < 5
-    then Error Iobuf_too_short
+    then Error Iobuf_too_short_for_header
     else (
       let message_length =
         (Iobuf.Peek.int32_be iobuf ~pos:1) + 1
       in
       if iobuf_length < message_length
-      then Error Iobuf_too_short
+      then Error (Iobuf_too_short_for_message { message_length })
       else if message_length < 5
       then Error (Nonsense_message_length message_length)
       else (
@@ -484,6 +485,11 @@ module Backend = struct
   end
 
   module Error_or_Notice = struct
+    type t =
+      { info : Info.t
+      ; error_code : string
+      }
+
     let field_name =
       function
       | 'S' -> "severity"
@@ -509,34 +515,48 @@ module Backend = struct
         sprintf "unknown-%c" other
 
     let consume_exn iobuf =
-      let rec loop ~iobuf ~fields_rev =
+      let rec loop ~iobuf ~fields_rev ~error_code =
         match Iobuf.Consume.char iobuf with
         | '\x00' ->
-          Info.create_s [%sexp (List.rev fields_rev : (string * string) list)]
+          { info = Info.create_s [%sexp (List.rev fields_rev : (string * string) list)]
+          ; error_code = Option.value_exn ~message:"code field is mandatory" error_code
+          }
         | other ->
           let tok = field_name other in
           let value = Shared.consume_cstring_exn iobuf in
-          loop ~iobuf ~fields_rev:((tok, value) :: fields_rev)
+          let this_error_code =
+            match other with
+            | 'C' -> Some value
+            | _ -> None
+          in
+          let error_code = Option.first_some error_code this_error_code in
+          loop ~iobuf ~fields_rev:((tok, value) :: fields_rev) ~error_code
       in
-      loop ~iobuf ~fields_rev:[]
+      loop ~iobuf ~fields_rev:[] ~error_code:None
   end
 
   module ErrorResponse = struct
-    type t = Error.t
+    type t =
+      { error : Error.t
+      ; error_code : string
+      }
 
     let consume iobuf =
       match Error_or_Notice.consume_exn iobuf with
       | exception exn -> error_s [%message "Failed to parse ErrorResponse" (exn : Exn.t)]
-      | info -> Ok (Error.of_info info)
+      | { info; error_code } -> Ok { error = (Error.of_info info); error_code }
   end
 
   module NoticeResponse = struct
-    type t = Info.t
+    type t = Error_or_Notice.t =
+      { info : Info.t
+      ; error_code : string
+      }
 
     let consume iobuf =
       match Error_or_Notice.consume_exn iobuf with
       | exception exn -> error_s [%message "Failed to parse NoticeResponse" (exn : Exn.t)]
-      | info -> Ok info
+      | x -> Ok x
   end
 
   module AuthenticationRequest = struct

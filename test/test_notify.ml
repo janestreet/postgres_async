@@ -12,7 +12,7 @@ let query_exn postgres string =
 
 let print_notifications ?saw_notification postgres ~channel =
   let%bind result =
-    Postgres_async.listen_to_notifications postgres ~channel ~f:(fun ~payload ->
+    Postgres_async.listen_to_notifications postgres ~channel ~f:(fun ~pid:_ ~payload ->
       Option.iter saw_notification ~f:(fun bvar -> Bvar.broadcast bvar ());
       print_s [%message "notification" ~channel ~payload]
     )
@@ -56,8 +56,8 @@ let%expect_test "listen/notify" =
       )
     in
     [%expect {|
-        (notification (channel channel-2) (payload m1))
-        (notification (channel channel-2) (payload m2)) |}];
+      (notification (channel channel-2) (payload m1))
+      (notification (channel channel-2) (payload m2)) |}];
     return ()
   )
 
@@ -68,7 +68,7 @@ let with_other_log_outputs log outputs ~f =
     Log.set_output log before;
     return ()
   in
-  Monitor.protect f ~finally
+  Monitor.protect ~run:`Now ~rest:`Raise f ~finally
 
 let%expect_test "multiple listeners" =
   Harness.with_connection_exn (force harness) ~database:"postgres" (fun postgres ->
@@ -85,11 +85,11 @@ let%expect_test "multiple listeners" =
     let%bind () = i1 in
     let%bind () = i2 in
     let%bind () = i3 in
-    ([%expect {|
+    [%expect {|
       (notification (channel a) (payload ""))
       (notification (channel a) (payload ""))
       (notification (channel a) (payload "")) |}];
-     return ())
+    return ()
   )
 
 let%expect_test "notify with no listeners" =
@@ -112,10 +112,10 @@ let%expect_test "notify with no listeners" =
       let%bind () = query_exn postgres "LISTEN channel_three" in
       let%bind () = query_exn postgres "NOTIFY channel_three" in
       let%bind () = sync in
-      ([%expect {|
+      [%expect {|
         (LOG
          ("Postgres NotificationResponse on channel that no callbacks are listening to"
           (channel channel_three))) |}];
-       return ())
+      return ()
     )
   )

@@ -40,3 +40,18 @@ let do_an_epoll =
       in
       let%bind () = Scheduler.yield_until_no_jobs_remain () in
       return ())
+
+let pg_backend_pid postgres =
+  let backend_pid = Set_once.create () in
+  let%bind result =
+    Postgres_async.query
+      postgres
+      "SELECT pg_backend_pid()"
+      ~handle_row:(fun ~column_names:_ ~values ->
+        match values with
+        | [|Some p|] -> Set_once.set_exn backend_pid [%here] p
+        | _ -> assert false
+      )
+  in
+  Or_error.ok_exn result;
+  return (Set_once.get_exn backend_pid [%here])
