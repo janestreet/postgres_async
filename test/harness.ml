@@ -1,4 +1,5 @@
 open Core
+module Unix = Core_unix
 
 type t =
   { datadir : string
@@ -34,7 +35,7 @@ let pg_hba =
   |> String.concat ~sep:"\n"
 
 (* unix sockets must be under ~100 characters long, so we create [socket_dir] in /tmp *)
-let socket_dir = lazy (Filename.temp_dir ~in_dir:"/tmp" "postgres-async-test-harness" "")
+let socket_dir = lazy (Filename_unix.temp_dir ~in_dir:"/tmp" "postgres-async-test-harness" "")
 let tempfiles_dir = Filename.temp_dir_name
 
 let fork_redirect_exec ~prog ~args ~stdouterr_file =
@@ -114,7 +115,7 @@ let create ?(extra_server_args=[]) () =
     in
     at_exit (fun () ->
       (* SIGQUIT = 'immediate shutdown' *)
-      (match Signal.send Signal.quit (`Pid server_pid) with
+      (match Signal_unix.send Signal.quit (`Pid server_pid) with
        | `No_such_process ->
          eprintf "in at-exit handler, postgres was not alive?\n%!"
        | `Ok ->
@@ -170,7 +171,7 @@ let create_database { socket_dir; port; _ } name =
 let pg_hba_filename { datadir; _ } = datadir ^/ "pg_hba.conf"
 let pg_ident_filename { datadir; _ } = datadir ^/ "pg_ident.conf"
 
-let sighup_server { server_pid; _ } = Signal.send_exn Signal.hup (`Pid server_pid)
+let sighup_server { server_pid; _ } = Signal_unix.send_exn Signal.hup (`Pid server_pid)
 
 let unix_socket_path { socket_dir; port; _ } = sprintf "%s/.s.PGSQL.%i" socket_dir port
 let port { port; _ } = port

@@ -148,7 +148,7 @@ let with_manual_server ~handle_client ~f:callback =
 
 let send_eof writer =
   let%bind () = Writer.flushed writer in
-  Fd.syscall_exn (Writer.fd writer) (Core.Unix.shutdown ~mode:SHUTDOWN_SEND);
+  Fd.syscall_exn (Writer.fd writer) (Core_unix.shutdown ~mode:SHUTDOWN_SEND);
   return ()
 
 let%expect_test "invaild messages during login" =
@@ -472,7 +472,7 @@ let%expect_test "asynchronous writer failure during login" =
       (* wait for the startup message. *)
       let%bind _ = Reader.read_char reader in
       (* shutdown read. *)
-      Fd.syscall_exn (Reader.fd reader) (Core.Unix.shutdown ~mode:SHUTDOWN_RECEIVE);
+      Fd.syscall_exn (Reader.fd reader) (Core_unix.shutdown ~mode:SHUTDOWN_RECEIVE);
       (* ask for a password. *)
       Writer.write writer "R\x00\x00\x00\x0c\x00\x00\x00\x05salt";
       Deferred.never ()
@@ -506,7 +506,7 @@ let%expect_test "asynchronous writer failure during query" =
       let%bind _ = Reader.read_char reader in
       Writer.write writer accept_login;
       (* shutdown read before the query is sent. *)
-      Fd.syscall_exn (Reader.fd reader) (Core.Unix.shutdown ~mode:SHUTDOWN_RECEIVE);
+      Fd.syscall_exn (Reader.fd reader) (Core_unix.shutdown ~mode:SHUTDOWN_RECEIVE);
       Deferred.never ()
     )
     ~f:(fun where_to_connect ->

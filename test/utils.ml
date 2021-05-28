@@ -25,7 +25,7 @@ let rec delete_unstable_bits_of_error : Sexp.t -> Sexp.t =
 
 let do_an_epoll =
   lazy (
-    let (pipe_r, pipe_w) = Core.Unix.pipe () in
+    let (pipe_r, pipe_w) = Core_unix.pipe () in
     let pipe_r = Fd.create Char pipe_r (Info.of_string "do-an-epoll-pipe-r") in
     let pipe_w = Fd.create Char pipe_w (Info.of_string "do-an-epoll-pipe-w") in
     let reader = Reader.create pipe_r in

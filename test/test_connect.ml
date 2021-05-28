@@ -1,6 +1,7 @@
 open! Core
 open Async
 
+let () = Backtrace.elide := true
 let harness = lazy (Harness.create ())
 
 let%expect_test "interrupt" =
@@ -178,10 +179,10 @@ let%expect_test "authentication method we don't support" =
 
 let%expect_test "connection refused" =
   (* bind, but don't listen or accept. *)
-  let socket = Core.Unix.socket ~domain:PF_INET ~kind:SOCK_STREAM ~protocol:0 () in
-  Core.Unix.bind socket ~addr:(ADDR_INET (Unix.Inet_addr.of_string "0.0.0.0", 0));
+  let socket = Core_unix.socket ~domain:PF_INET ~kind:SOCK_STREAM ~protocol:0 () in
+  Core_unix.bind socket ~addr:(ADDR_INET (Unix.Inet_addr.of_string "0.0.0.0", 0));
   let where_to_connect =
-    match Core.Unix.getsockname socket with
+    match Core_unix.getsockname socket with
     | ADDR_UNIX _ -> assert false
     | ADDR_INET (_, port) ->
       Tcp.Where_to_connect.of_host_and_port (Host_and_port.create ~host:"localhost" ~port)
@@ -194,7 +195,7 @@ let%expect_test "connection refused" =
       ~on_handler_exception:`Raise
       (fun _ -> return ())
   in
-  Core.Unix.close socket;
+  Core_unix.close socket;
   print_s [%sexp (result : _ Or_error.t)];
   [%expect {|
     (Error
