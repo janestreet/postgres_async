@@ -28,8 +28,8 @@ open! Int.Replace_polymorphic_compare
    complicated than that which you see below. *)
 
 type job =
-  | Job
-    : { start : unit Ivar.t
+  | Job :
+      { start : unit Ivar.t
       ; finished : 'a Deferred.t
       }
       -> job
@@ -40,8 +40,8 @@ type when_idle_next_step =
   | Finished
 
 type t =
-  { jobs_waiting      : job Queue.t
-  ; any_work_added    : (unit, read_write) Bvar.t
+  { jobs_waiting : job Queue.t
+  ; any_work_added : (unit, read_write) Bvar.t
   ; mutable when_idle : (unit -> when_idle_next_step Deferred.t) option
   }
 [@@deriving sexp_of]
@@ -54,28 +54,25 @@ let rec run t =
       let%bind _ = finished in
       return ()
     | None ->
-      match t.when_idle with
-      | None ->
-        Bvar.wait t.any_work_added
-      | Some func ->
-        match%bind func () with
-        | Finished ->
-          t.when_idle <- None;
-          return ()
-        | Call_me_when_idle_again ->
-          return ()
+      (match t.when_idle with
+       | None -> Bvar.wait t.any_work_added
+       | Some func ->
+         (match%bind func () with
+          | Finished ->
+            t.when_idle <- None;
+            return ()
+          | Call_me_when_idle_again -> return ()))
   in
   run t
+;;
 
 let create () =
   let t =
-    { jobs_waiting   = Queue.create ()
-    ; any_work_added = Bvar.create ()
-    ; when_idle      = None
-    }
+    { jobs_waiting = Queue.create (); any_work_added = Bvar.create (); when_idle = None }
   in
   don't_wait_for (run t);
   t
+;;
 
 let enqueue t job : _ Deferred.t =
   let start = Ivar.create () in
@@ -86,6 +83,7 @@ let enqueue t job : _ Deferred.t =
   Queue.enqueue t.jobs_waiting (Job { start; finished });
   Bvar.broadcast t.any_work_added ();
   finished
+;;
 
 let when_idle t callback =
   match t.when_idle with
@@ -93,6 +91,7 @@ let when_idle t callback =
   | None ->
     t.when_idle <- Some callback;
     Bvar.broadcast t.any_work_added ()
+;;
 
 let rec other_jobs_are_waiting t =
   match Queue.is_empty t.jobs_waiting with
@@ -100,3 +99,4 @@ let rec other_jobs_are_waiting t =
   | true ->
     let%bind () = Bvar.wait t.any_work_added in
     other_jobs_are_waiting t
+;;

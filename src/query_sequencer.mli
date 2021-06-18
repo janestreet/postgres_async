@@ -24,7 +24,6 @@ open Async
 type t [@@deriving sexp_of]
 
 val create : unit -> t
-
 val enqueue : t -> (unit -> 'a Deferred.t) -> 'a Deferred.t
 
 type when_idle_next_step =

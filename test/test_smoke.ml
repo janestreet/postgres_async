@@ -9,15 +9,14 @@ let%expect_test "check that basic query functionality works" =
       Postgres_async.query
         postgres
         "SELECT $1::int"
-        ~parameters:[|Some "1234"|]
+        ~parameters:[| Some "1234" |]
         ~handle_row:(fun ~column_names:_ ~values ->
-          print_s [%message (values : string option array)]
-        )
+          print_s [%message (values : string option array)])
     in
     Or_error.ok_exn result;
     [%expect {| (values ((1234))) |}];
-    return ()
-  )
+    return ())
+;;
 
 let%expect_test "check that fundamental copy-in features work" =
   Harness.with_connection_exn (force harness) ~database:"postgres" (fun postgres ->
@@ -33,7 +32,7 @@ let%expect_test "check that fundamental copy-in features work" =
       Postgres_async.copy_in_rows
         postgres
         ~table_name:"x"
-        ~column_names:[|"y"; "z"|]
+        ~column_names:[| "y"; "z" |]
         ~feed_data:(fun () ->
           match !countdown with
           | 0 -> Finished
@@ -42,8 +41,7 @@ let%expect_test "check that fundamental copy-in features work" =
             Data
               [| Some (Int.to_string i)
                ; Option.some_if (i % 2 = 0) (sprintf "asdf-%i" i)
-              |]
-        )
+              |])
     in
     Or_error.ok_exn result;
     [%expect {||}];
@@ -52,11 +50,12 @@ let%expect_test "check that fundamental copy-in features work" =
         postgres
         "SELECT * FROM x ORDER BY y"
         ~handle_row:(fun ~column_names ~values ->
-          print_s [%sexp (Array.zip_exn column_names values : (string * string option) array)]
-        )
+          print_s
+            [%sexp (Array.zip_exn column_names values : (string * string option) array)])
     in
     Or_error.ok_exn result;
-    [%expect {|
+    [%expect
+      {|
       ((y (1)) (z ()))
       ((y (2)) (z (asdf-2)))
       ((y (3)) (z ()))
@@ -67,5 +66,5 @@ let%expect_test "check that fundamental copy-in features work" =
       ((y (8)) (z (asdf-8)))
       ((y (9)) (z ()))
       ((y (10)) (z (asdf-10))) |}];
-    return ()
-  )
+    return ())
+;;

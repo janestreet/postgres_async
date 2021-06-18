@@ -2,6 +2,8 @@ open! Core
 open Async
 
 module type S = sig
+  type column_metadata
+
   (** In order to provide an [Expert] interface that uses [Pgasync_error.t] to represent
       its errors, alongside a normal interface that just uses Core's [Error.t], the
       interface is defined in this [module type S], with a type [error] that we erase when
@@ -53,10 +55,14 @@ module type S = sig
     -> (t -> 'res Deferred.t)
     -> ('res, error) Result.t Deferred.t
 
+  (** [handle_columns] can provide column information even if 0 rows are found.
+      [handle_columns] is guaranteed to be called before the first invocation of
+      [handle_row] *)
   val query
     :  t
     -> ?parameters:string option array
     -> ?pushback:(unit -> unit Deferred.t)
+    -> ?handle_columns:(column_metadata array -> unit)
     -> string
     -> handle_row:(column_names:string array -> values:string option array -> unit)
     -> (unit, error) Result.t Deferred.t

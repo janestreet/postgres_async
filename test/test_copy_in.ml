@@ -4,13 +4,13 @@ open Async
 let with_connection_exn =
   let database = "test_copy_in" in
   let harness =
-    lazy (
-      let h = Harness.create () in
-      Harness.create_database h database;
-      h)
+    lazy
+      (let h = Harness.create () in
+       Harness.create_database h database;
+       h)
   in
-  fun func ->
-    Harness.with_connection_exn (force harness) ~database func
+  fun func -> Harness.with_connection_exn (force harness) ~database func
+;;
 
 let create_table postgres name columns =
   let%bind result =
@@ -20,6 +20,7 @@ let create_table postgres name columns =
   in
   Or_error.ok_exn result;
   return ()
+;;
 
 let print_table postgres =
   let%bind result =
@@ -27,22 +28,22 @@ let print_table postgres =
       postgres
       "SELECT * FROM x ORDER BY y"
       ~handle_row:(fun ~column_names:_ ~values ->
-        print_s [%sexp (values : string option array)]
-      )
+        print_s [%sexp (values : string option array)])
   in
   Or_error.ok_exn result;
   return ()
+;;
 
 let%expect_test "copy_in_rows" =
   with_connection_exn (fun postgres ->
-    let%bind () = create_table postgres "x" ["y integer primary key"; "z text"] in
+    let%bind () = create_table postgres "x" [ "y integer primary key"; "z text" ] in
     [%expect {||}];
     let%bind result =
       let rows =
         Queue.of_list
-          [ [| Some "one"   ; Some "1" |]
-          ; [| None         ; Some "2" |]
-          ; [| Some "three" ; Some "3" |]
+          [ [| Some "one"; Some "1" |]
+          ; [| None; Some "2" |]
+          ; [| Some "three"; Some "3" |]
           ]
       in
       Postgres_async.copy_in_rows
@@ -52,8 +53,7 @@ let%expect_test "copy_in_rows" =
         ~feed_data:(fun () ->
           match Queue.dequeue rows with
           | None -> Finished
-          | Some c -> Data c
-        )
+          | Some c -> Data c)
     in
     Or_error.ok_exn result;
     [%expect {| |}];
@@ -62,32 +62,32 @@ let%expect_test "copy_in_rows" =
       ((1) (one))
       ((2) ())
       ((3) (three)) |}];
-    return ()
-  )
+    return ())
+;;
 
 let%expect_test "copy_in_rows: nasty characters" =
   with_connection_exn (fun postgres ->
     let%bind () =
-      create_table postgres "x" ["y integer primary key"; "z text"; "w bytea" ]
+      create_table postgres "x" [ "y integer primary key"; "z text"; "w bytea" ]
     in
     [%expect {||}];
     let%bind result =
       let rows =
         Queue.of_list
-          [ [| Some "1"  ; Some "\n"    ; None         |]
-          ; [| Some "2"  ; Some "\\N"   ; None         |]
-          ; [| Some "3"  ; Some "\t"    ; None         |]
-          ; [| Some "4"  ; Some "\\t"   ; None         |]
-          ; [| Some "5"  ; Some ","     ; None         |]
-          ; [| Some "6"  ; Some ""      ; None         |]
-          ; [| Some "7"  ; Some "\\"    ; None         |]
-          ; [| Some "8"  ; Some "\\x61" ; None         |]
-          ; [| Some "9"  ; Some ""      ; None         |]
-          ; [| Some "10" ; Some "\x00"  ; None         |]
-          ; [| Some "11" ; None         ; Some "asdf"  |]
-          ; [| Some "12" ; None         ; Some "\n"    |]
-          ; [| Some "13" ; None         ; Some "\\x00" |]
-          ; [| Some "14" ; None         ; Some "\\x61" |]
+          [ [| Some "1"; Some "\n"; None |]
+          ; [| Some "2"; Some "\\N"; None |]
+          ; [| Some "3"; Some "\t"; None |]
+          ; [| Some "4"; Some "\\t"; None |]
+          ; [| Some "5"; Some ","; None |]
+          ; [| Some "6"; Some ""; None |]
+          ; [| Some "7"; Some "\\"; None |]
+          ; [| Some "8"; Some "\\x61"; None |]
+          ; [| Some "9"; Some ""; None |]
+          ; [| Some "10"; Some "\x00"; None |]
+          ; [| Some "11"; None; Some "asdf" |]
+          ; [| Some "12"; None; Some "\n" |]
+          ; [| Some "13"; None; Some "\\x00" |]
+          ; [| Some "14"; None; Some "\\x61" |]
           ]
       in
       Postgres_async.copy_in_rows
@@ -97,13 +97,13 @@ let%expect_test "copy_in_rows: nasty characters" =
         ~feed_data:(fun () ->
           match Queue.dequeue rows with
           | None -> Finished
-          | Some c -> Data c
-        )
+          | Some c -> Data c)
     in
     Or_error.ok_exn result;
     [%expect {| |}];
     let%bind () = print_table postgres in
-    [%expect {|
+    [%expect
+      {|
       ((1) ("\n") ())
       ((2) ("\\N") ())
       ((3) ("\t") ())
@@ -118,8 +118,8 @@ let%expect_test "copy_in_rows: nasty characters" =
       ((12) () ("\\x0a"))
       ((13) () ("\\x00"))
       ((14) () ("\\x61")) |}];
-    return ()
-  )
+    return ())
+;;
 
 let%expect_test "copy_in_rows: nasty column names" =
   with_connection_exn (fun postgres ->
@@ -145,14 +145,14 @@ let%expect_test "copy_in_rows: nasty column names" =
       Postgres_async.copy_in_rows
         postgres
         ~table_name:"table-name "
-        ~column_names:[| "k"; "y space"; "z\"quote"; "year"; "lowercase1"; "UPPERCASE2" |]
+        ~column_names:
+          [| "k"; "y space"; "z\"quote"; "year"; "lowercase1"; "UPPERCASE2" |]
         ~feed_data:(fun () ->
           match !sent_row with
           | true -> Finished
           | false ->
             sent_row := true;
-            Data [| Some "1"; Some "A"; Some "B"; Some "C"; Some "D"; Some "E" |]
-        )
+            Data [| Some "1"; Some "A"; Some "B"; Some "C"; Some "D"; Some "E" |])
     in
     Or_error.ok_exn result;
     [%expect {| |}];
@@ -161,25 +161,24 @@ let%expect_test "copy_in_rows: nasty column names" =
         postgres
         {| SELECT * FROM "table-name " ORDER BY k |}
         ~handle_row:(fun ~column_names ~values ->
-          Array.iter
-            (Array.zip_exn column_names values)
-            ~f:(fun (k, v) -> print_s [%sexp (k : string), (v : string option)])
-        )
+          Array.iter (Array.zip_exn column_names values) ~f:(fun (k, v) ->
+            print_s [%sexp (k : string), (v : string option)]))
     in
     Or_error.ok_exn result;
-    [%expect {|
+    [%expect
+      {|
       (k (1))
       ("y space" (A))
       ("z\"quote" (B))
       (year (C))
       (lowercase1 (D))
       (UPPERCASE2 (E)) |}];
-    return ()
-  )
+    return ())
+;;
 
 let%expect_test "copy_in_rows: lots of data" =
   with_connection_exn (fun postgres ->
-    let%bind () = create_table postgres "x" ["y integer primary key"; "z text"] in
+    let%bind () = create_table postgres "x" [ "y integer primary key"; "z text" ] in
     [%expect {||}];
     let%bind result =
       let counter = ref 0 in
@@ -193,14 +192,13 @@ let%expect_test "copy_in_rows: lots of data" =
           match !counter >= 8192 with
           | true -> Finished
           | false ->
-            match !counter / 256 < !sleeps with
-            | true ->
-              incr sleeps;
-              Wait ((force Utils.do_an_epoll) ())
-            | false ->
-              incr counter;
-              Data [| Some (Int.to_string !counter); Some one_kb |]
-        )
+            (match !counter / 256 < !sleeps with
+             | true ->
+               incr sleeps;
+               Wait ((force Utils.do_an_epoll) ())
+             | false ->
+               incr counter;
+               Data [| Some (Int.to_string !counter); Some one_kb |]))
     in
     Or_error.ok_exn result;
     [%expect {| |}];
@@ -210,20 +208,19 @@ let%expect_test "copy_in_rows: lots of data" =
         {| SELECT COUNT(*), MIN(y), MAX(y), SUM(y), MIN(LENGTH(z)) FROM x |}
         ~handle_row:(fun ~column_names:_ ~values ->
           let values = Array.map ~f:(fun x -> Option.value_exn x) values in
-          print_s [%sexp (values : string array)]
-        )
+          print_s [%sexp (values : string array)])
     in
     Or_error.ok_exn result;
     [%expect {| (8192 1 8192 33558528 1024) |}];
     print_s [%sexp (8192 * 8193 / 2 : int)];
     [%expect {| 33558528 |}];
-    return ()
-  )
+    return ())
+;;
 
 let%expect_test "raw: weird chunking" =
   with_connection_exn (fun postgres ->
     let%bind () =
-      create_table postgres "x" ["y integer primary key"; "z text not null"]
+      create_table postgres "x" [ "y integer primary key"; "z text not null" ]
     in
     [%expect {||}];
     (* weird chunking is fine, it doesn't need to correspond to rows: *)
@@ -235,8 +232,7 @@ let%expect_test "raw: weird chunking" =
         ~feed_data:(fun () ->
           match Queue.dequeue chunks with
           | None -> Finished
-          | Some c -> Data c
-        )
+          | Some c -> Data c)
     in
     Or_error.ok_exn result;
     [%expect {||}];
@@ -244,13 +240,13 @@ let%expect_test "raw: weird chunking" =
     [%expect {|
       ((1) (one))
       ((2) (two)) |}];
-    return ()
-  )
+    return ())
+;;
 
 let%expect_test "aborting" =
   with_connection_exn (fun postgres ->
     let%bind () =
-      create_table postgres "x" ["y integer primary key"; "z text not null"]
+      create_table postgres "x" [ "y integer primary key"; "z text not null" ]
     in
     [%expect {||}];
     let%bind result =
@@ -265,8 +261,7 @@ let%expect_test "aborting" =
           | 2 -> Wait (Scheduler.yield_until_no_jobs_remain ())
           | 3 -> Data "2\ttwo\n"
           | 4 -> Abort { reason = "user reason" }
-          | _ -> assert false
-        )
+          | _ -> assert false)
     in
     (match result with
      | Ok () -> failwith "succeeded!?"
@@ -274,8 +269,8 @@ let%expect_test "aborting" =
        let err = Utils.delete_unstable_bits_of_error [%sexp (err : Error.t)] in
        print_s err);
     (* 57014: query_cancelled. *)
-    [%expect {| ((severity ERROR) (code 57014)) |}];
+    [%expect {| ((Code 57014)) |}];
     let%bind () = print_table postgres in
     [%expect {| |}];
-    return ()
-  )
+    return ())
+;;

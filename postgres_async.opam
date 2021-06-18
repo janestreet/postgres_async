@@ -12,7 +12,6 @@ build: [
 depends: [
   "ocaml" {>= "4.08.0"}
   "async"
-  "core"
   "core_kernel"
   "ppx_jane"
   "dune"        {>= "2.0.0"}

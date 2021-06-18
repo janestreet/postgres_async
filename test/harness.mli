@@ -2,18 +2,11 @@ open! Core
 
 type t
 
-val create
-  :  ?extra_server_args:string list
-  -> unit
-  -> t
-
+val create : ?extra_server_args:string list -> unit -> t
 val create_database : t -> string -> unit
-
 val pg_hba_filename : t -> string
 val pg_ident_filename : t -> string
-
 val sighup_server : t -> unit
-
 val unix_socket_path : t -> string
 val port : t -> int
 

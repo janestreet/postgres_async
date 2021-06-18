@@ -18,9 +18,7 @@ let%expect_test "interrupt" =
     in
     let got_connection = Ivar.read got_connection in
     let addr =
-      Host_and_port.create
-        ~host:"127.0.0.1"
-        ~port:(Tcp.Server.listening_on server)
+      Host_and_port.create ~host:"127.0.0.1" ~port:(Tcp.Server.listening_on server)
     in
     let finally () = Tcp.Server.close server in
     Monitor.protect ~run:`Now ~rest:`Raise ~finally (fun () -> func addr ~got_connection)
@@ -40,11 +38,11 @@ let%expect_test "interrupt" =
       | Ok (_ : Nothing.t) -> .
       | Error err ->
         print_s [%sexp (err : Error.t)];
-        [%expect {|
+        [%expect
+          {|
           (monitor.ml.Error ("connection attempt aborted" 127.0.0.1:PORT)
            ("<backtrace elided in test>" "Caught by monitor try_with_or_error")) |}];
-        return ()
-    )
+        return ())
   in
   let%bind () =
     with_dummy_server (fun addr ~got_connection ->
@@ -60,12 +58,12 @@ let%expect_test "interrupt" =
       | Error err ->
         print_s [%sexp (err : Error.t)];
         [%expect {| "login interrupted" |}];
-        return ()
-    )
+        return ())
   in
   return ()
+;;
 
-let try_login ?(user="postgres") ?password ?(database="postgres") harness =
+let try_login ?(user = "postgres") ?password ?(database = "postgres") harness =
   let get_user postgres =
     let u_d = Set_once.create () in
     let%bind result =
@@ -75,8 +73,7 @@ let try_login ?(user="postgres") ?password ?(database="postgres") harness =
         ~handle_row:(fun ~column_names:_ ~values ->
           match values with
           | [| Some u; Some d |] -> Set_once.set_exn u_d [%here] (u, d)
-          | _ -> failwith "bad query response"
-        )
+          | _ -> failwith "bad query response")
     in
     Or_error.ok_exn result;
     return (Set_once.get_exn u_d [%here])
@@ -94,8 +91,9 @@ let try_login ?(user="postgres") ?password ?(database="postgres") harness =
      wrt. postgres versions. *)
   (match result with
    | Ok (u, d) -> printf "OK; user:%s database:%s\n" u d
-   | Error _   -> printf "Login failed\n");
+   | Error _ -> printf "Login failed\n");
   return ()
+;;
 
 let%expect_test "trust auth" =
   let harness = force harness in
@@ -104,6 +102,7 @@ let%expect_test "trust auth" =
   let%bind () = try_login harness ~password:"nonsense" in
   [%expect {| OK; user:postgres database:postgres |}];
   return ()
+;;
 
 let%expect_test "password authentication" =
   let harness = force harness in
@@ -117,8 +116,7 @@ let%expect_test "password authentication" =
       let%bind () = q "CREATE ROLE role_password_login" in
       let%bind () = q "CREATE ROLE auth_test_1 LOGIN PASSWORD 'test-password'" in
       let%bind () = q "GRANT role_password_login TO auth_test_1" in
-      return ()
-    )
+      return ())
   in
   [%expect {||}];
   let%bind () = try_login harness ~user:"auth_test_1" ~password:"test-password" in
@@ -126,6 +124,7 @@ let%expect_test "password authentication" =
   let%bind () = try_login harness ~user:"auth_test_1" ~password:"bad" in
   [%expect {| Login failed |}];
   return ()
+;;
 
 let%expect_test "unix sockets & tcp" =
   let harness = force harness in
@@ -149,6 +148,7 @@ let%expect_test "unix sockets & tcp" =
   in
   Or_error.ok_exn result;
   return ()
+;;
 
 let%expect_test "authentication method we don't support" =
   let%bind tcp_server =
@@ -176,6 +176,7 @@ let%expect_test "authentication method we don't support" =
   print_s [%sexp (result : _ Or_error.t)];
   [%expect {| (Error "Server wants unimplemented auth subtype: SCMCredential") |}];
   return ()
+;;
 
 let%expect_test "connection refused" =
   (* bind, but don't listen or accept. *)
@@ -197,17 +198,20 @@ let%expect_test "connection refused" =
   in
   Core_unix.close socket;
   print_s [%sexp (result : _ Or_error.t)];
-  [%expect {|
+  [%expect
+    {|
     (Error
      (monitor.ml.Error
       (Unix.Unix_error "Connection refused" connect 127.0.0.1:PORT)
       ("<backtrace elided in test>" "Caught by monitor Tcp.close_sock_on_error"))) |}];
   return ()
+;;
 
 let%expect_test "graceful close" =
   let harness = force harness in
   let%bind connection =
-    Postgres_async.connect ()
+    Postgres_async.connect
+      ()
       ~server:(Harness.where_to_connect harness)
       ~user:"postgres"
       ~database:"postgres"
@@ -217,3 +221,4 @@ let%expect_test "graceful close" =
   print_s [%sexp (result : unit Or_error.t)];
   [%expect {| (Ok ()) |}];
   return ()
+;;
