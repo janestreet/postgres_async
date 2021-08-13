@@ -576,6 +576,8 @@ let%expect_test "handle_column raising prevents any call to handle_row" =
       [%expect
         {|
         ("Got expected exn"
-         (exn (monitor.ml.Error "Intentionally raising in handle_columns"))) |}];
+         (exn
+          (monitor.ml.Error "Intentionally raising in handle_columns"
+           ("<backtrace elided in test>")))) |}];
       return ())
 ;;
