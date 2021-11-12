@@ -884,13 +884,11 @@ module Expert = struct
          in
          (match%bind
             choose
-              [ choice (Clock.after (sec 10.)) (fun () -> `Timeout)
-              ; choice interrupt (fun () -> `Interrupt)
+              [ choice interrupt (fun () -> `Interrupt)
               ; choice (login t ~user ~password ~gss_krb_token ~database) (fun l ->
                   `Result l)
               ]
           with
-          | `Timeout -> login_failed (Pgasync_error.of_string "timeout while logging in")
           | `Interrupt -> login_failed (Pgasync_error.of_string "login interrupted")
           | `Result (Connection_closed err) -> return (Error err)
           | `Result (Done (Error err)) -> login_failed err
