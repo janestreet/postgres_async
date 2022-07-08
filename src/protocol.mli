@@ -63,6 +63,7 @@ module Frontend : sig
   module Writer : sig
     open Async
 
+    val ssl_request : Writer.t -> unit -> unit
     val startup_message : Writer.t -> StartupMessage.t -> unit
     val password_message : Writer.t -> PasswordMessage.t -> unit
     val parse : Writer.t -> Parse.t -> unit

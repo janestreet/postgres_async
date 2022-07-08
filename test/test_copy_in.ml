@@ -274,3 +274,43 @@ let%expect_test "aborting" =
     [%expect {| |}];
     return ())
 ;;
+
+let%expect_test "copy_in_rows with schema prefix" =
+  with_connection_exn (fun postgres ->
+    let%bind () =
+      Postgres_async.query_expect_no_data postgres "CREATE SCHEMA my_schema"
+      >>| Or_error.ok_exn
+    in
+    let%bind () =
+      Postgres_async.query_expect_no_data
+        postgres
+        "CREATE TABLE my_schema.x (y integer)"
+      >>| Or_error.ok_exn
+    in
+    [%expect {||}];
+    let%bind result =
+      let rows = Queue.of_list [ [| Some "1" |]; [| Some "2" |] ] in
+      Postgres_async.copy_in_rows
+        postgres
+        ~table_name:"my_schema.x"
+        ~column_names:[| "y" |]
+        ~feed_data:(fun () ->
+          match Queue.dequeue rows with
+          | None -> Finished
+          | Some c -> Data c)
+    in
+    Or_error.ok_exn result;
+    [%expect {| |}];
+    let%bind () =
+      Postgres_async.query
+        postgres
+        "SELECT * FROM my_schema.x ORDER BY y"
+        ~handle_row:(fun ~column_names:_ ~values ->
+          print_s [%sexp (values : string option array)])
+      >>| Or_error.ok_exn
+    in
+    [%expect {|
+      ((1))
+      ((2)) |}];
+    return ())
+;;

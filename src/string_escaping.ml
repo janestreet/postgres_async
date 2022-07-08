@@ -2,7 +2,10 @@ open Core
 open! Int.Replace_polymorphic_compare
 
 let escape_identifier s =
-  "\"" ^ String.substr_replace_all s ~pattern:"\"" ~with_:"\"\"" ^ "\""
+  String.split s ~on:'.'
+  |> List.map ~f:(fun s ->
+    "\"" ^ String.substr_replace_all s ~pattern:"\"" ~with_:"\"\"" ^ "\"")
+  |> String.concat ~sep:"."
 ;;
 
 module Copy_in = struct

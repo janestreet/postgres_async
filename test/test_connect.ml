@@ -4,25 +4,26 @@ open Async
 let () = Backtrace.elide := true
 let harness = lazy (Harness.create ())
 
-let%expect_test "interrupt" =
-  let with_dummy_server func =
-    let got_connection = Ivar.create () in
-    let%bind server =
-      Tcp.Server.create
-        ~on_handler_error:`Raise
-        Tcp.Where_to_listen.of_port_chosen_by_os
-        (fun _ reader _ ->
-           let%bind _ = Reader.peek reader ~len:1 in
-           Ivar.fill got_connection ();
-           Reader.drain reader)
-    in
-    let got_connection = Ivar.read got_connection in
-    let addr =
-      Host_and_port.create ~host:"127.0.0.1" ~port:(Tcp.Server.listening_on server)
-    in
-    let finally () = Tcp.Server.close server in
-    Monitor.protect ~run:`Now ~rest:`Raise ~finally (fun () -> func addr ~got_connection)
+let with_dummy_server func =
+  let got_connection = Ivar.create () in
+  let%bind server =
+    Tcp.Server.create
+      ~on_handler_error:`Raise
+      Tcp.Where_to_listen.of_port_chosen_by_os
+      (fun _ reader _ ->
+         let%bind _ = Reader.peek reader ~len:1 in
+         Ivar.fill got_connection ();
+         Reader.drain reader)
   in
+  let got_connection = Ivar.read got_connection in
+  let addr =
+    Host_and_port.create ~host:"127.0.0.1" ~port:(Tcp.Server.listening_on server)
+  in
+  let finally () = Tcp.Server.close server in
+  Monitor.protect ~run:`Now ~rest:`Raise ~finally (fun () -> func addr ~got_connection)
+;;
+
+let%expect_test "interrupt - TCP" =
   let%bind () =
     with_dummy_server (fun addr ~got_connection:_ ->
       (* This is technically racey, because the connect call could in principle complete
@@ -58,6 +59,49 @@ let%expect_test "interrupt" =
       | Error err ->
         print_s [%sexp (err : Error.t)];
         [%expect {| "login interrupted" |}];
+        return ())
+  in
+  return ()
+;;
+
+let%expect_test "interrupt - SSL" =
+  let%bind () =
+    with_dummy_server (fun addr ~got_connection:_ ->
+      (* This is technically racey, because the connect call could in principle complete
+         before the [choice] picks the interrupt. But it doesn't. *)
+      match%bind
+        Postgres_async.with_connection
+          ~server:(Tcp.Where_to_connect.of_host_and_port addr)
+          ~ssl_mode:Prefer
+          ~interrupt:(return ())
+          ~database:"dummy"
+          ~on_handler_exception:`Raise
+          (fun _ -> failwith "connection succeeded!?")
+      with
+      | Ok (_ : Nothing.t) -> .
+      | Error err ->
+        print_s [%sexp (err : Error.t)];
+        [%expect
+          {|
+          (monitor.ml.Error ("connection attempt aborted" 127.0.0.1:PORT)
+           ("<backtrace elided in test>" "Caught by monitor try_with_or_error")) |}];
+        return ())
+  in
+  let%bind () =
+    with_dummy_server (fun addr ~got_connection ->
+      match%bind
+        Postgres_async.with_connection
+          ~server:(Tcp.Where_to_connect.of_host_and_port addr)
+          ~ssl_mode:Prefer
+          ~interrupt:got_connection
+          ~database:"dummy"
+          ~on_handler_exception:`Raise
+          (fun _ -> failwith "connection succeeded!?")
+      with
+      | Ok (_ : Nothing.t) -> .
+      | Error err ->
+        print_s [%sexp (err : Error.t)];
+        [%expect {| "ssl negotiation interrupted" |}];
         return ())
   in
   return ()

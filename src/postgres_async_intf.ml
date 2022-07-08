@@ -3,6 +3,7 @@ open Async
 
 module type S = sig
   type column_metadata
+  type ssl_mode
 
   (** In order to provide an [Expert] interface that uses [Pgasync_error.t] to represent
       its errors, alongside a normal interface that just uses Core's [Error.t], the
@@ -15,9 +16,12 @@ module type S = sig
   (** [gss_krb_token] will be sent in response to a server's request to initiate GSSAPI
       authentication. We don't support GSS/SSPI authentication that requires multiple
       steps; if the server sends us a "GSSContinue" message in response to
-      [gss_krb_token], login will fail. Kerberos should not require this. *)
+      [gss_krb_token], login will fail. Kerberos should not require this.
+
+      [ssl_mode] defaults to [Ssl_mode.Disable]. *)
   val connect
     :  ?interrupt:unit Deferred.t
+    -> ?ssl_mode:ssl_mode
     -> ?server:_ Tcp.Where_to_connect.t
     -> ?user:string
     -> ?password:string
@@ -46,6 +50,7 @@ module type S = sig
 
   val with_connection
     :  ?interrupt:unit Deferred.t
+    -> ?ssl_mode:ssl_mode
     -> ?server:_ Tcp.Where_to_connect.t
     -> ?user:string
     -> ?password:string

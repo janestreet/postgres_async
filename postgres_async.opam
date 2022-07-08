@@ -12,6 +12,7 @@ build: [
 depends: [
   "ocaml" {>= "4.08.0"}
   "async"
+  "async_ssl"
   "core"
   "core_kernel"
   "ppx_jane"

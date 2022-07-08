@@ -91,6 +91,22 @@ module Frontend = struct
     ;;
   end
 
+  module SSLRequest = struct
+    let message_type_char = None
+
+    type t = unit
+
+    let payload_length () = 4
+    let validate_exn () = ()
+
+    (* These values look like dummy ones, but are the ones given in the postgres
+       spec; the goal is to never collide with any protocol versions. *)
+    let fill () iobuf =
+      Iobuf.Fill.int16_be_trunc iobuf 1234;
+      Iobuf.Fill.int16_be_trunc iobuf 5679
+    ;;
+  end
+
   module StartupMessage = struct
     let message_type_char = None
 
@@ -408,6 +424,7 @@ module Frontend = struct
           ~blit_to_bigstring)
     ;;
 
+    let ssl_request = Staged.unstage (write_message (module SSLRequest))
     let startup_message = Staged.unstage (write_message (module StartupMessage))
     let password_message = Staged.unstage (write_message (module PasswordMessage))
     let parse = Staged.unstage (write_message (module Parse))

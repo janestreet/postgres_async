@@ -3,6 +3,7 @@ open Async
 open Int.Replace_polymorphic_compare
 module Notification_channel = Types.Notification_channel
 module Column_metadata = Column_metadata
+module Ssl_mode = Ssl_mode
 
 (* https://www.postgresql.org/docs/current/protocol.html *)
 
@@ -844,8 +845,109 @@ module Expert = struct
     lazy (Where_to_connect (Tcp.Where_to_connect.of_file "/run/postgresql/.s.PGSQL.5432"))
   ;;
 
+  let maybe_ssl_wrap ~interrupt ~ssl_mode ~tcp_reader ~tcp_writer =
+    let negotiate_ssl ~required =
+      match Protocol.Frontend.Writer.ssl_request tcp_writer () with
+      | exception exn -> return (Or_error.of_exn exn)
+      | () ->
+        (match%bind
+           choose
+             [ choice interrupt (fun () -> `Interrupt)
+             ; choice (Reader.read_char tcp_reader) (function
+                 | `Eof -> `Eof
+                 | `Ok char -> `Ok char)
+             ]
+         with
+         | `Interrupt -> return (error_s [%message "ssl negotiation interrupted"])
+         | `Eof ->
+           return (error_s [%message "Reader closed before ssl negotiation response"])
+         | `Ok 'S' ->
+           (* [Prefer] and [Require] do not demand certificate verification, which is
+              why you see us assign [Verify_none] and a [verify_callback] that
+              unconditionally returns [Ok ()]. We'd need to revisit that if we added
+              [Ssl_mode.t] constructors akin to libpq's [Verify_ca] or
+              [Verify_full]. *)
+           Monitor.try_with_or_error ~rest:`Log (fun () ->
+             let%bind t, (_ : [ `Connection_closed of unit Deferred.t ]) =
+               Async_ssl.Tls.Expert.wrap_client_connection_and_stay_open
+                 (Async_ssl.Config.Client.create
+                    ~verify_modes:[ Verify_none ]
+                    ~ca_file:None
+                    ~ca_path:None
+                    ~remote_hostname:None
+                    ~verify_callback:(fun (_ : Async_ssl.Ssl.Connection.t) ->
+                      return (Ok ()))
+                    ())
+                 tcp_reader
+                 tcp_writer
+                 ~f:(fun (_ : Async_ssl.Ssl.Connection.t) ssl_reader ssl_writer ->
+                   let t = create_internal ssl_reader ssl_writer in
+                   let close_finished_deferred =
+                     let%bind (_ : unit Or_pgasync_error.t) = close_finished t in
+                     return ()
+                   in
+                   return (t, `Do_not_close_until close_finished_deferred))
+             in
+             return t)
+         | `Ok 'N' ->
+           (match required with
+            | true ->
+              return
+                (error_s
+                   [%message
+                     "Server indicated it cannot use SSL connections, but ssl_mode is set \
+                      to Require"])
+            | false ->
+              (* 'N' means the server is unwilling to use SSL connections, but is happy to
+                 proceed without encryption (and sending a [StartupMessage] on the same
+                 connection is the correct way to do so). *)
+              return (Ok (create_internal tcp_reader tcp_writer)))
+         | `Ok response_char ->
+           (* 'E' (or potentially another character?) can indicate that the server
+              doesn't understand the request, and we must re-start the connection from
+              scratch.
+
+              This should only happen for ancient versions of postgres, which are not
+              supported by this library. *)
+           return
+             (error_s
+                [%message
+                  "Postgres Server indicated it does not understand the SSLRequest \
+                   message. This may mean that the server is running a very outdated \
+                   version of postgres, or some other problem may be occuring. You can \
+                   try to run with ssl_mode = Disable to skip the SSLRequest and use \
+                   plain TCP."
+                    (response_char : Char.t)]))
+    in
+    match (ssl_mode : Ssl_mode.t) with
+    | Disable ->
+      let t = create_internal tcp_reader tcp_writer in
+      return (Ok t)
+    | Prefer -> negotiate_ssl ~required:false
+    | Require -> negotiate_ssl ~required:true
+  ;;
+
+  let connect_tcp_and_maybe_start_ssl ~interrupt ~ssl_mode server =
+    match%bind
+      Monitor.try_with_or_error ~rest:`Log (fun () -> Tcp.connect ~interrupt server)
+    with
+    | Error _ as result -> return result
+    | Ok (_sock, tcp_reader, tcp_writer) ->
+      (match%bind maybe_ssl_wrap ~interrupt ~ssl_mode ~tcp_reader ~tcp_writer with
+       | Error _ as result ->
+         let%bind () = Writer.close tcp_writer in
+         let%bind () = Reader.close tcp_reader in
+         return result
+       | Ok t ->
+         let writer_failed =
+           Monitor.detach_and_get_next_error (Writer.monitor tcp_writer)
+         in
+         return (Ok (t, writer_failed)))
+  ;;
+
   let connect
         ?(interrupt = Deferred.never ())
+        ?(ssl_mode = Ssl_mode.Disable)
         ?server
         ?user
         ?password
@@ -866,13 +968,9 @@ module Expert = struct
     match user with
     | Error err -> return (Error (Pgasync_error.of_error err))
     | Ok user ->
-      (match%bind
-         Monitor.try_with_or_error ~rest:`Log (fun () -> Tcp.connect ~interrupt server)
-       with
-       | Error err -> return (Error (Pgasync_error.of_error err))
-       | Ok (_sock, reader, writer) ->
-         let t = create_internal reader writer in
-         let writer_failed = Monitor.detach_and_get_next_error (Writer.monitor writer) in
+      (match%bind connect_tcp_and_maybe_start_ssl ~interrupt ~ssl_mode server with
+       | Error error -> return (Error (Pgasync_error.of_error error))
+       | Ok (t, writer_failed) ->
          upon writer_failed (fun exn ->
            failed
              t
@@ -899,6 +997,7 @@ module Expert = struct
 
   let with_connection
         ?interrupt
+        ?ssl_mode
         ?server
         ?user
         ?password
@@ -907,7 +1006,9 @@ module Expert = struct
         ~on_handler_exception:`Raise
         func
     =
-    match%bind connect ?interrupt ?server ?user ?password ?gss_krb_token ~database () with
+    match%bind
+      connect ?interrupt ?ssl_mode ?server ?user ?password ?gss_krb_token ~database ()
+    with
     | Error _ as e -> return e
     | Ok t ->
       (match%bind Monitor.try_with ~run:`Now ~rest:`Raise (fun () -> func t) with
@@ -1476,8 +1577,8 @@ end
 
 type t = Expert.t [@@deriving sexp_of]
 
-let connect ?interrupt ?server ?user ?password ?gss_krb_token ~database () =
-  Expert.connect ?interrupt ?server ?user ?password ?gss_krb_token ~database ()
+let connect ?interrupt ?ssl_mode ?server ?user ?password ?gss_krb_token ~database () =
+  Expert.connect ?interrupt ?ssl_mode ?server ?user ?password ?gss_krb_token ~database ()
   >>| Or_pgasync_error.to_or_error
 ;;
 
@@ -1505,6 +1606,7 @@ let status t =
 
 let with_connection
       ?interrupt
+      ?ssl_mode
       ?server
       ?user
       ?password
@@ -1515,6 +1617,7 @@ let with_connection
   =
   Expert.with_connection
     ?interrupt
+    ?ssl_mode
     ?server
     ?user
     ?password

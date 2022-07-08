@@ -1,6 +1,7 @@
 open! Core
 
-(** Contains information on the name and type of a column in query results *)
+(*_ see postgres_async.mli for documentation. *)
+
 type t
 
 val create : name:string -> format:[ `Text ] -> pg_type_oid:int -> t

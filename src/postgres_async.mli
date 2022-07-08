@@ -58,6 +58,7 @@ module Or_pgasync_error : sig
 end
 
 module Column_metadata : sig
+  (** Contains information on the name and type of a column in query results *)
   type t
 
   val name : t -> string
@@ -67,6 +68,34 @@ module Column_metadata : sig
   val pg_type_oid : t -> int
 end
 
+module Ssl_mode : sig
+  (** [t] is a subset of the types supported by the 'sslmode' parameter in libpq
+      (documented at https://www.postgresql.org/docs/current/libpq-ssl.html).
+
+      We don't currently support verifying certificate signatures, so there's nothing
+      analogous to the "verify-ca" or "verify-full" options here. We don't distinguish
+      between "allow" and "prefer" (they seem to exactly match in terms of behavior).
+
+      Under the hood, [Prefer] and [Require] will both result in the very first message
+      sent to the server being the [SSLRequest] message, instead of the [StartupMessage].
+      The server will respond with whether or not it is able to support SSL.
+
+      Using [Require], [connect] will return an error if the server cannot support SSL.
+
+      [Prefer] will SSL-wrap the connection if the server supports SSL, or will use
+      a plain TCP connection if the server does not support SSL.
+
+      [Disable] will always use the plain TCP connection, and will not send the
+      [SSLRequest] message. *)
+  type t =
+    | Disable
+    | Prefer
+    | Require
+
+  val to_libpq_string : t -> string
+  val of_libpq_string : string -> t option
+end
+
 type t [@@deriving sexp_of]
 
 include
@@ -74,6 +103,7 @@ include
   with type t := t
    and type error := Error.t
    and type column_metadata := Column_metadata.t
+   and type ssl_mode := Ssl_mode.t
 
 (** The [Expert] module provides versions of all the same functions that instead return
     [Or_pgasync_error.t]s.
@@ -85,6 +115,7 @@ module Expert :
   with type t := t
    and type error := Pgasync_error.t
    and type column_metadata := Column_metadata.t
+   and type ssl_mode := Ssl_mode.t
 
 module Private : sig
   val pgasync_error_of_error : Error.t -> Pgasync_error.t
