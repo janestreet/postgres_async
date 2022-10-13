@@ -353,7 +353,7 @@ module Expert = struct
 
   let notification_bus t channel =
     Hashtbl.find_or_add t.notification_buses channel ~default:(fun () ->
-      Bus.create
+      Bus.create_exn
         [%here]
         Arity2
         ~on_subscription_after_first_write:Allow
