@@ -118,5 +118,7 @@ module Expert :
    and type ssl_mode := Ssl_mode.t
 
 module Private : sig
+  module Protocol = Protocol
+
   val pgasync_error_of_error : Error.t -> Pgasync_error.t
 end

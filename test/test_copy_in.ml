@@ -22,11 +22,11 @@ let create_table postgres name columns =
   return ()
 ;;
 
-let print_table postgres =
+let print_table postgres table =
   let%bind result =
     Postgres_async.query
       postgres
-      "SELECT * FROM x ORDER BY y"
+      (sprintf "SELECT * FROM %s ORDER BY y" table)
       ~handle_row:(fun ~column_names:_ ~values ->
         print_s [%sexp (values : string option array)])
   in
@@ -57,7 +57,44 @@ let%expect_test "copy_in_rows" =
     in
     Or_error.ok_exn result;
     [%expect {| |}];
-    let%bind () = print_table postgres in
+    let%bind () = print_table postgres "x" in
+    [%expect {|
+      ((1) (one))
+      ((2) ())
+      ((3) (three)) |}];
+    return ())
+;;
+
+let%expect_test "copy_in_rows, schema" =
+  with_connection_exn (fun postgres ->
+    let%bind () =
+      create_table
+        postgres
+        {|pg_temp."test.table"|}
+        [ "y integer primary key"; "z text" ]
+    in
+    [%expect {||}];
+    let%bind result =
+      let rows =
+        Queue.of_list
+          [ [| Some "one"; Some "1" |]
+          ; [| None; Some "2" |]
+          ; [| Some "three"; Some "3" |]
+          ]
+      in
+      Postgres_async.copy_in_rows
+        postgres
+        ~schema_name:"pg_temp"
+        ~table_name:{|"test.table"|}
+        ~column_names:[| "z"; "y" |]
+        ~feed_data:(fun () ->
+          match Queue.dequeue rows with
+          | None -> Finished
+          | Some c -> Data c)
+    in
+    Or_error.ok_exn result;
+    [%expect {| |}];
+    let%bind () = print_table postgres {|pg_temp."test.table"|} in
     [%expect {|
       ((1) (one))
       ((2) ())
@@ -101,7 +138,7 @@ let%expect_test "copy_in_rows: nasty characters" =
     in
     Or_error.ok_exn result;
     [%expect {| |}];
-    let%bind () = print_table postgres in
+    let%bind () = print_table postgres "x" in
     [%expect
       {|
       ((1) ("\n") ())
@@ -144,9 +181,15 @@ let%expect_test "copy_in_rows: nasty column names" =
       let sent_row = ref false in
       Postgres_async.copy_in_rows
         postgres
-        ~table_name:"table-name "
+        ~table_name:{|"table-name "|}
         ~column_names:
-          [| "k"; "y space"; "z\"quote"; "year"; "lowercase1"; "UPPERCASE2" |]
+          [| "k"
+           ; {|"y space"|}
+           ; {|"z""quote"|}
+           ; "year"
+           ; "lowercase1"
+           ; {|"UPPERCASE2"|}
+          |]
         ~feed_data:(fun () ->
           match !sent_row with
           | true -> Finished
@@ -236,7 +279,7 @@ let%expect_test "raw: weird chunking" =
     in
     Or_error.ok_exn result;
     [%expect {||}];
-    let%bind () = print_table postgres in
+    let%bind () = print_table postgres "x" in
     [%expect {|
       ((1) (one))
       ((2) (two)) |}];
@@ -270,7 +313,7 @@ let%expect_test "aborting" =
        print_s err);
     (* 57014: query_cancelled. *)
     [%expect {| ((Code 57014)) |}];
-    let%bind () = print_table postgres in
+    let%bind () = print_table postgres "x" in
     [%expect {| |}];
     return ())
 ;;

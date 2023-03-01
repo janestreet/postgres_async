@@ -18,7 +18,15 @@ module type S = sig
       steps; if the server sends us a "GSSContinue" message in response to
       [gss_krb_token], login will fail. Kerberos should not require this.
 
-      [ssl_mode] defaults to [Ssl_mode.Disable]. *)
+      [ssl_mode] defaults to [Ssl_mode.Disable].
+
+      [buffer_age_limit] sets the age limit on the outgoing Writer.t. The default limit
+      is 2m to preserve existing behavior, but you likely want [`Unlimited] to avoid
+      application crashes when the database is loaded---and this may become the default at
+      some point in the future.
+
+      [buffer_byte_limit] is only used during a COPY---it pauses inserting more rows and
+      flushes the entire Writer.t if its buffer contains this many bytes or more. *)
   val connect
     :  ?interrupt:unit Deferred.t
     -> ?ssl_mode:ssl_mode
@@ -26,6 +34,8 @@ module type S = sig
     -> ?user:string
     -> ?password:string
     -> ?gss_krb_token:string
+    -> ?buffer_age_limit:Async_unix.Writer.buffer_age_limit
+    -> ?buffer_byte_limit:Byte_units.t
     -> database:string
     -> unit
     -> (t, error) Result.t Deferred.t
@@ -55,6 +65,8 @@ module type S = sig
     -> ?user:string
     -> ?password:string
     -> ?gss_krb_token:string
+    -> ?buffer_age_limit:Async_unix.Writer.buffer_age_limit
+    -> ?buffer_byte_limit:Byte_units.t
     -> database:string
     -> on_handler_exception:[ `Raise ]
     -> (t -> 'res Deferred.t)
@@ -91,8 +103,11 @@ module type S = sig
     -> feed_data:(unit -> string feed_data_result)
     -> (unit, error) Result.t Deferred.t
 
+  (** Note that [table_name] and [column_names] must be escaped before calling
+      [copy_in_rows]. *)
   val copy_in_rows
-    :  t
+    :  ?schema_name:string
+    -> t
     -> table_name:string
     -> column_names:string array
     -> feed_data:(unit -> string option array feed_data_result)

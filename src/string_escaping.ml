@@ -8,17 +8,32 @@ let escape_identifier s =
   |> String.concat ~sep:"."
 ;;
 
+(* temporary escape hatch in case we break someone's code *)
+let quote_table_name_requested =
+  lazy (Option.is_some (Sys.getenv "POSTGRES_ASYNC_COPY_ESCAPE_NAMES"))
+;;
+
 module Copy_in = struct
-  let query ~table_name ~column_names =
+  let query ?schema_name ~table_name ~column_names () =
     let column_names =
-      Array.map column_names ~f:escape_identifier
+      (if Lazy.force quote_table_name_requested
+       then Array.map column_names ~f:escape_identifier
+       else column_names)
       |> Array.to_list
       |> String.concat ~sep:", "
     in
-    sprintf
-      !"COPY %{escape_identifier} ( %s ) FROM STDIN ( FORMAT text,  DELIMITER '\t' )"
-      table_name
-      column_names
+    let table_name =
+      if Lazy.force quote_table_name_requested
+      then escape_identifier table_name
+      else table_name
+    in
+    let table_name =
+      match schema_name with
+      | None -> table_name
+      | Some schema -> schema ^ "." ^ table_name
+    in
+    [%string
+      "COPY %{table_name} ( %{column_names} ) FROM STDIN ( FORMAT text,  DELIMITER '\t')"]
   ;;
 
   let special_escape char =

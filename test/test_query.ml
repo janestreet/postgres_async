@@ -124,7 +124,8 @@ let%expect_test "queries where Describe Portal = NoData are accepted by [query]"
 
 let%expect_test "empty query" =
   with_connection_exn (fun postgres ->
-    Deferred.List.iter [ ""; "-- comment" ] ~f:(fun str -> query_exn postgres str))
+    Deferred.List.iter ~how:`Sequential [ ""; "-- comment" ] ~f:(fun str ->
+      query_exn postgres str))
 ;;
 
 let%expect_test "failures are reported gracefully and don't kill the connection" =

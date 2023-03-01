@@ -1,10 +1,14 @@
 open! Core
 
-(** [escape_identifier] is for things like table names, column names, ... *)
-val escape_identifier : string -> string
-
 module Copy_in : sig
-  val query : table_name:string -> column_names:string array -> string
+  (** Note that [schema_name], [table_name], and [column_names] must be escaped before
+      calling [query]. *)
+  val query
+    :  ?schema_name:string
+    -> table_name:string
+    -> column_names:string array
+    -> unit
+    -> string
 
   (** [row_to_string] includes the terminating '\n' *)
   val row_to_string : string option array -> string

@@ -198,10 +198,11 @@ module Expert = struct
       ; notification_buses :
           (Pid.t -> string -> unit, read_write) Bus.t Notification_channel.Table.t
       ; backend_key : Types.backend_key Set_once.t
+      ; buffer_byte_limit : int
       }
     [@@deriving sexp_of]
 
-    val create_internal : Reader.t -> Writer.t -> t
+    val create_internal : buffer_byte_limit:int -> Reader.t -> Writer.t -> t
     val failed : t -> Pgasync_error.t -> unit
 
     type to_flush_or_not =
@@ -235,6 +236,7 @@ module Expert = struct
       ; notification_buses :
           (Pid.t -> string -> unit, read_write) Bus.t Notification_channel.Table.t
       ; backend_key : Types.backend_key Set_once.t
+      ; buffer_byte_limit : int
       }
     [@@deriving sexp_of]
 
@@ -262,7 +264,7 @@ module Expert = struct
            return ())
     ;;
 
-    let create_internal reader writer =
+    let create_internal ~buffer_byte_limit reader writer =
       { reader
       ; writer
       ; state = Open
@@ -271,6 +273,7 @@ module Expert = struct
       ; runtime_parameters = String.Table.create ()
       ; notification_buses = Notification_channel.Table.create ~size:1 ()
       ; backend_key = Set_once.create ()
+      ; buffer_byte_limit
       }
     ;;
 
@@ -845,7 +848,7 @@ module Expert = struct
     lazy (Where_to_connect (Tcp.Where_to_connect.of_file "/run/postgresql/.s.PGSQL.5432"))
   ;;
 
-  let maybe_ssl_wrap ~interrupt ~ssl_mode ~tcp_reader ~tcp_writer =
+  let maybe_ssl_wrap ~buffer_byte_limit ~interrupt ~ssl_mode ~tcp_reader ~tcp_writer =
     let negotiate_ssl ~required =
       match Protocol.Frontend.Writer.ssl_request tcp_writer () with
       | exception exn -> return (Or_error.of_exn exn)
@@ -869,6 +872,11 @@ module Expert = struct
               [Verify_full]. *)
            Monitor.try_with_or_error ~rest:`Log (fun () ->
              let%bind t, (_ : [ `Connection_closed of unit Deferred.t ]) =
+               (* Async_ssl (and its use of Writer.pipe) internally propagates pushback
+                  between the readers and writers, so it should have a relatively small
+                  number of bytes stuck in its internal buffers.
+
+                  Applying [buffer_byte_limit] to [create_internal] suffices. *)
                Async_ssl.Tls.Expert.wrap_client_connection_and_stay_open
                  (Async_ssl.Config.Client.create
                     ~verify_modes:[ Verify_none ]
@@ -881,7 +889,7 @@ module Expert = struct
                  tcp_reader
                  tcp_writer
                  ~f:(fun (_ : Async_ssl.Ssl.Connection.t) ssl_reader ssl_writer ->
-                   let t = create_internal ssl_reader ssl_writer in
+                   let t = create_internal ~buffer_byte_limit ssl_reader ssl_writer in
                    let close_finished_deferred =
                      let%bind (_ : unit Or_pgasync_error.t) = close_finished t in
                      return ()
@@ -901,7 +909,7 @@ module Expert = struct
               (* 'N' means the server is unwilling to use SSL connections, but is happy to
                  proceed without encryption (and sending a [StartupMessage] on the same
                  connection is the correct way to do so). *)
-              return (Ok (create_internal tcp_reader tcp_writer)))
+              return (Ok (create_internal ~buffer_byte_limit tcp_reader tcp_writer)))
          | `Ok response_char ->
            (* 'E' (or potentially another character?) can indicate that the server
               doesn't understand the request, and we must re-start the connection from
@@ -921,19 +929,28 @@ module Expert = struct
     in
     match (ssl_mode : Ssl_mode.t) with
     | Disable ->
-      let t = create_internal tcp_reader tcp_writer in
+      let t = create_internal ~buffer_byte_limit tcp_reader tcp_writer in
       return (Ok t)
     | Prefer -> negotiate_ssl ~required:false
     | Require -> negotiate_ssl ~required:true
   ;;
 
-  let connect_tcp_and_maybe_start_ssl ~interrupt ~ssl_mode server =
+  let connect_tcp_and_maybe_start_ssl
+        ~buffer_age_limit
+        ~buffer_byte_limit
+        ~interrupt
+        ~ssl_mode
+        server
+    =
     match%bind
-      Monitor.try_with_or_error ~rest:`Log (fun () -> Tcp.connect ~interrupt server)
+      Monitor.try_with_or_error ~rest:`Log (fun () ->
+        Tcp.connect ~buffer_age_limit ~interrupt server)
     with
     | Error _ as result -> return result
     | Ok (_sock, tcp_reader, tcp_writer) ->
-      (match%bind maybe_ssl_wrap ~interrupt ~ssl_mode ~tcp_reader ~tcp_writer with
+      (match%bind
+         maybe_ssl_wrap ~buffer_byte_limit ~interrupt ~ssl_mode ~tcp_reader ~tcp_writer
+       with
        | Error _ as result ->
          let%bind () = Writer.close tcp_writer in
          let%bind () = Reader.close tcp_reader in
@@ -952,6 +969,8 @@ module Expert = struct
         ?user
         ?password
         ?gss_krb_token
+        ?(buffer_age_limit = `At_most (Time_float.Span.of_int_min 2))
+        ?(buffer_byte_limit = Byte_units.of_megabytes 128.)
         ~database
         ()
     =
@@ -968,7 +987,14 @@ module Expert = struct
     match user with
     | Error err -> return (Error (Pgasync_error.of_error err))
     | Ok user ->
-      (match%bind connect_tcp_and_maybe_start_ssl ~interrupt ~ssl_mode server with
+      (match%bind
+         connect_tcp_and_maybe_start_ssl
+           ~buffer_age_limit
+           ~buffer_byte_limit:(Byte_units.bytes_int_exn buffer_byte_limit)
+           ~interrupt
+           ~ssl_mode
+           server
+       with
        | Error error -> return (Error (Pgasync_error.of_error error))
        | Ok (t, writer_failed) ->
          upon writer_failed (fun exn ->
@@ -1002,12 +1028,24 @@ module Expert = struct
         ?user
         ?password
         ?gss_krb_token
+        ?buffer_age_limit
+        ?buffer_byte_limit
         ~database
         ~on_handler_exception:`Raise
         func
     =
     match%bind
-      connect ?interrupt ?ssl_mode ?server ?user ?password ?gss_krb_token ~database ()
+      connect
+        ?interrupt
+        ?ssl_mode
+        ?server
+        ?user
+        ?password
+        ?gss_krb_token
+        ?buffer_age_limit
+        ?buffer_byte_limit
+        ~database
+        ()
     with
     | Error _ as e -> return e
     | Ok t ->
@@ -1496,7 +1534,7 @@ module Expert = struct
             | Data payload ->
               catch_write_errors t ~flush_message:Not_required ~f:(fun writer ->
                 Protocol.Frontend.Writer.copy_data writer payload);
-              (match bytes_pending_in_writer_buffer t > 128 * 1024 * 1024 with
+              (match bytes_pending_in_writer_buffer t > t.buffer_byte_limit with
                | false -> loop ()
                | true -> continue ~after:(wait_for_writer_buffer_to_be_empty t))
             | Finished ->
@@ -1550,8 +1588,10 @@ module Expert = struct
   (* [copy_in_rows] builds on [copy_in_raw] and clearly doesn't raise exceptions in the
      callback wrapper, so we can just rely on [copy_in_raw] to handle sequencing and
      exceptions here. *)
-  let copy_in_rows t ~table_name ~column_names ~feed_data =
-    let query_string = String_escaping.Copy_in.query ~table_name ~column_names in
+  let copy_in_rows ?schema_name t ~table_name ~column_names ~feed_data =
+    let query_string =
+      String_escaping.Copy_in.query ?schema_name ~table_name ~column_names ()
+    in
     copy_in_raw t query_string ~feed_data:(fun () ->
       match feed_data () with
       | (Abort _ | Wait _ | Finished) as x -> x
@@ -1577,8 +1617,29 @@ end
 
 type t = Expert.t [@@deriving sexp_of]
 
-let connect ?interrupt ?ssl_mode ?server ?user ?password ?gss_krb_token ~database () =
-  Expert.connect ?interrupt ?ssl_mode ?server ?user ?password ?gss_krb_token ~database ()
+let connect
+      ?interrupt
+      ?ssl_mode
+      ?server
+      ?user
+      ?password
+      ?gss_krb_token
+      ?buffer_age_limit
+      ?buffer_byte_limit
+      ~database
+      ()
+  =
+  Expert.connect
+    ?interrupt
+    ?ssl_mode
+    ?server
+    ?user
+    ?password
+    ?gss_krb_token
+    ?buffer_age_limit
+    ?buffer_byte_limit
+    ~database
+    ()
   >>| Or_pgasync_error.to_or_error
 ;;
 
@@ -1611,6 +1672,8 @@ let with_connection
       ?user
       ?password
       ?gss_krb_token
+      ?buffer_age_limit
+      ?buffer_byte_limit
       ~database
       ~on_handler_exception:`Raise
       func
@@ -1622,6 +1685,8 @@ let with_connection
     ?user
     ?password
     ?gss_krb_token
+    ?buffer_age_limit
+    ?buffer_byte_limit
     ~database
     ~on_handler_exception:`Raise
     func
@@ -1639,8 +1704,8 @@ let copy_in_raw t ?parameters query_string ~feed_data =
   >>| Or_pgasync_error.to_or_error
 ;;
 
-let copy_in_rows t ~table_name ~column_names ~feed_data =
-  Expert.copy_in_rows t ~table_name ~column_names ~feed_data
+let copy_in_rows ?schema_name t ~table_name ~column_names ~feed_data =
+  Expert.copy_in_rows ?schema_name t ~table_name ~column_names ~feed_data
   >>| Or_pgasync_error.to_or_error
 ;;
 
@@ -1658,5 +1723,7 @@ let query t ?parameters ?pushback ?handle_columns query_string ~handle_row =
 ;;
 
 module Private = struct
+  module Protocol = Protocol
+
   let pgasync_error_of_error = Pgasync_error.of_error
 end

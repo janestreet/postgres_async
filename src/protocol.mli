@@ -113,6 +113,8 @@ module Backend : sig
     | Iobuf_too_short_for_message of { message_length : int }
     | Nonsense_message_length of int
 
+  val constructor_of_char : char -> (constructor, focus_on_message_error) Result.t
+
   val focus_on_message
     :  ([> read ], Iobuf.seek) Iobuf.t
     -> (constructor, focus_on_message_error) Result.t

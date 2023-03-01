@@ -99,7 +99,8 @@ let handle_client ?(force_non_ssl = false) ~ssl_char reader writer =
 let ssl_harness () =
   let%bind () =
     (* Postgres refuses to start if ssl files are too broadly permissioned *)
-    Deferred.List.iter [ crt_file; key_file ] ~f:(fun file -> Unix.chmod file ~perm:0o600)
+    Deferred.List.iter ~how:`Sequential [ crt_file; key_file ] ~f:(fun file ->
+      Unix.chmod file ~perm:0o600)
   in
   let%bind dir = Unix.getcwd () in
   let harness =
@@ -150,7 +151,7 @@ let%expect_test "SSL negotation failure does not raise" =
      (monitor.ml.Error
       (Ssl_error
        ("error:1408F10B:SSL routines:ssl3_get_record:wrong version number")
-       lib/async_ssl/src/ssl.ml:210:20)
+       lib/async_ssl/src/ssl.ml:213:20)
       ("<backtrace elided in test>" "Caught by monitor ssl_pipe"))) |}];
   Deferred.unit
 ;;
