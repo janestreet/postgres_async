@@ -68,10 +68,7 @@ let%expect_test "copy_in_rows" =
 let%expect_test "copy_in_rows, schema" =
   with_connection_exn (fun postgres ->
     let%bind () =
-      create_table
-        postgres
-        {|pg_temp."test.table"|}
-        [ "y integer primary key"; "z text" ]
+      create_table postgres {|pg_temp."test.table"|} [ "y integer primary key"; "z text" ]
     in
     [%expect {||}];
     let%bind result =
@@ -183,13 +180,7 @@ let%expect_test "copy_in_rows: nasty column names" =
         postgres
         ~table_name:{|"table-name "|}
         ~column_names:
-          [| "k"
-           ; {|"y space"|}
-           ; {|"z""quote"|}
-           ; "year"
-           ; "lowercase1"
-           ; {|"UPPERCASE2"|}
-          |]
+          [| "k"; {|"y space"|}; {|"z""quote"|}; "year"; "lowercase1"; {|"UPPERCASE2"|} |]
         ~feed_data:(fun () ->
           match !sent_row with
           | true -> Finished
@@ -269,13 +260,10 @@ let%expect_test "raw: weird chunking" =
     (* weird chunking is fine, it doesn't need to correspond to rows: *)
     let%bind result =
       let chunks = Queue.of_list [ "1\tone\n"; "2\t"; "two"; "\n" ] in
-      Postgres_async.copy_in_raw
-        postgres
-        "COPY x (y, z) FROM STDIN"
-        ~feed_data:(fun () ->
-          match Queue.dequeue chunks with
-          | None -> Finished
-          | Some c -> Data c)
+      Postgres_async.copy_in_raw postgres "COPY x (y, z) FROM STDIN" ~feed_data:(fun () ->
+        match Queue.dequeue chunks with
+        | None -> Finished
+        | Some c -> Data c)
     in
     Or_error.ok_exn result;
     [%expect {||}];
@@ -294,17 +282,14 @@ let%expect_test "aborting" =
     [%expect {||}];
     let%bind result =
       let count = ref 0 in
-      Postgres_async.copy_in_raw
-        postgres
-        "COPY x (y, z) FROM STDIN"
-        ~feed_data:(fun () ->
-          incr count;
-          match !count with
-          | 1 -> Data "1\tone\n"
-          | 2 -> Wait (Scheduler.yield_until_no_jobs_remain ())
-          | 3 -> Data "2\ttwo\n"
-          | 4 -> Abort { reason = "user reason" }
-          | _ -> assert false)
+      Postgres_async.copy_in_raw postgres "COPY x (y, z) FROM STDIN" ~feed_data:(fun () ->
+        incr count;
+        match !count with
+        | 1 -> Data "1\tone\n"
+        | 2 -> Wait (Scheduler.yield_until_no_jobs_remain ())
+        | 3 -> Data "2\ttwo\n"
+        | 4 -> Abort { reason = "user reason" }
+        | _ -> assert false)
     in
     (match result with
      | Ok () -> failwith "succeeded!?"
@@ -325,9 +310,7 @@ let%expect_test "copy_in_rows with schema prefix" =
       >>| Or_error.ok_exn
     in
     let%bind () =
-      Postgres_async.query_expect_no_data
-        postgres
-        "CREATE TABLE my_schema.x (y integer)"
+      Postgres_async.query_expect_no_data postgres "CREATE TABLE my_schema.x (y integer)"
       >>| Or_error.ok_exn
     in
     [%expect {||}];

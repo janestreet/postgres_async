@@ -307,8 +307,7 @@ module Expert = struct
               Protocol.Frontend.Writer.terminate writer);
             (* we'll get an exception if the reader is already closed. *)
             match%bind
-              Monitor.try_with ~run:`Now ~rest:`Log (fun () ->
-                Reader.read_char t.reader)
+              Monitor.try_with ~run:`Now ~rest:`Log (fun () -> Reader.read_char t.reader)
             with
             | Ok `Eof -> return (Ok ())
             | Ok (`Ok c) ->
@@ -903,8 +902,8 @@ module Expert = struct
               return
                 (error_s
                    [%message
-                     "Server indicated it cannot use SSL connections, but ssl_mode is set \
-                      to Require"])
+                     "Server indicated it cannot use SSL connections, but ssl_mode is \
+                      set to Require"])
             | false ->
               (* 'N' means the server is unwilling to use SSL connections, but is happy to
                  proceed without encryption (and sending a [StartupMessage] on the same
@@ -1243,8 +1242,7 @@ module Expert = struct
          | Ok err ->
            let err =
              Pgasync_error.of_error_response err
-             |> Pgasync_error.tag
-                  ~tag:"Error during query execution (despite parsing ok)"
+             |> Pgasync_error.tag ~tag:"Error during query execution (despite parsing ok)"
            in
            Stop (Error err))
       | CommandComplete ->
@@ -1447,9 +1445,7 @@ module Expert = struct
                   [%message
                     "[Postgres_async.query_expect_no_data]: query attempted COPY OUT"]))
         | Done (Ready_to_copy_in _) ->
-          let reason =
-            "[Postgres_async.query_expect_no_data]: query attempted COPY IN"
-          in
+          let reason = "[Postgres_async.query_expect_no_data]: query attempted COPY IN" in
           let%bind (Connection_closed _ | Done ()) = abort_copy_in t ~reason in
           return (Done (Or_pgasync_error.error_string reason))
         | Done (About_to_deliver_rows _) ->
@@ -1459,14 +1455,11 @@ module Expert = struct
            | Done _ ->
              return
                (Done
-                  (Or_pgasync_error.error_s
-                     [%message "query unexpectedly produced rows"])))
+                  (Or_pgasync_error.error_s [%message "query unexpectedly produced rows"])))
         | Done (Remote_reported_error error) -> return (Done (Error error))
         | Done (Empty_query | Command_complete_without_output) -> return (Done (Ok ()))
       in
-      let%bind sync_result =
-        close_unnamed_portal_and_statement_and_sync_after_query t
-      in
+      let%bind sync_result = close_unnamed_portal_and_statement_and_sync_after_query t in
       match result, sync_result with
       | Connection_closed err, _ | Done (Error err), _ | _, Connection_closed err ->
         return (Error err)

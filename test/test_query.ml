@@ -37,8 +37,7 @@ let%expect_test "column names and ordering" =
   with_connection_exn (fun postgres ->
     let query_exn = query_exn postgres ~show_column_names:true in
     let%bind () =
-      query_exn
-        "CREATE TEMPORARY TABLE a ( x timestamp, y integer PRIMARY KEY, z text );"
+      query_exn "CREATE TEMPORARY TABLE a ( x timestamp, y integer PRIMARY KEY, z text );"
     in
     let%bind () =
       query_exn
@@ -148,8 +147,7 @@ let%expect_test "failures are reported gracefully and don't kill the connection"
         return ()
     in
     let%bind () = query "syntactically invalid" in
-    [%expect
-      {|
+    [%expect {|
       (Error ("Postgres Server Error (state=Parsing)" ((Code 42601)))) |}];
     (* but we can still use the connection just fine *)
     let%bind () = query "SELECT 1" in
@@ -158,8 +156,7 @@ let%expect_test "failures are reported gracefully and don't kill the connection"
       OK |}];
     (* let's try errors at other stages. *)
     let%bind () = query "SELECT $1::int" ~parameters:[| Some "a" |] in
-    [%expect
-      {|
+    [%expect {|
       (Error ("Postgres Server Error (state=Binding)" ((Code 22P02)))) |}];
     let%bind () = query "DO $$ BEGIN RAISE 'hi'; END $$" in
     [%expect
@@ -261,14 +258,10 @@ let%expect_test "transactions" =
     [%expect {| |}];
     let%bind () =
       with_connection_exn (fun inner_postgres ->
-        let%bind () =
-          query_exn inner_postgres "SELECT COUNT(*) FROM transaction_test"
-        in
+        let%bind () = query_exn inner_postgres "SELECT COUNT(*) FROM transaction_test" in
         [%expect {| ((1)) |}];
         let%bind () = query_exn postgres "COMMIT" (* outer postgres! *) in
-        let%bind () =
-          query_exn inner_postgres "SELECT COUNT(*) FROM transaction_test"
-        in
+        let%bind () = query_exn inner_postgres "SELECT COUNT(*) FROM transaction_test" in
         [%expect {| ((2)) |}];
         return ())
     in
@@ -509,12 +502,10 @@ let%expect_test "the handle_column callback" =
     in
     (* Setup two tables and a view. *)
     let%bind () =
-      query_exn
-        "CREATE TEMPORARY TABLE a ( x timestamp, y integer PRIMARY KEY, z text );"
+      query_exn "CREATE TEMPORARY TABLE a ( x timestamp, y integer PRIMARY KEY, z text );"
     in
     let%bind () =
-      query_exn
-        "CREATE TEMPORARY TABLE b ( x timestamp, y integer PRIMARY KEY, z text );"
+      query_exn "CREATE TEMPORARY TABLE b ( x timestamp, y integer PRIMARY KEY, z text );"
     in
     let%bind () = query_exn "CREATE TEMPORARY VIEW vw_a AS select * from a" in
     let%bind () =

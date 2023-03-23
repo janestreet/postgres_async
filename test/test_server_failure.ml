@@ -82,19 +82,16 @@ let%expect_test "terminate backend" =
     with_connection (fun postgres ->
       let%bind backend_pid = Utils.pg_backend_pid postgres in
       let%bind () =
-        Harness.with_connection_exn
-          (force harness)
-          ~database:"postgres"
-          (fun postgres2 ->
-             let%bind result =
-               Postgres_async.query
-                 postgres2
-                 "SELECT pg_terminate_backend($1)"
-                 ~parameters:[| Some backend_pid |]
-                 ~handle_row:(fun ~column_names:_ ~values:_ -> ())
-             in
-             Or_error.ok_exn result;
-             return ())
+        Harness.with_connection_exn (force harness) ~database:"postgres" (fun postgres2 ->
+          let%bind result =
+            Postgres_async.query
+              postgres2
+              "SELECT pg_terminate_backend($1)"
+              ~parameters:[| Some backend_pid |]
+              ~handle_row:(fun ~column_names:_ ~values:_ -> ())
+          in
+          Or_error.ok_exn result;
+          return ())
       in
       let%bind result = Postgres_async.close_finished postgres in
       print_or_error result;

@@ -39,9 +39,7 @@ let%expect_test "check that fundamental copy-in features work" =
           | i ->
             decr countdown;
             Data
-              [| Some (Int.to_string i)
-               ; Option.some_if (i % 2 = 0) (sprintf "asdf-%i" i)
-              |])
+              [| Some (Int.to_string i); Option.some_if (i % 2 = 0) (sprintf "asdf-%i" i) |])
     in
     Or_error.ok_exn result;
     [%expect {||}];
