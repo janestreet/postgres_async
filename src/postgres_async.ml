@@ -1094,7 +1094,7 @@ module Expert = struct
 
      [parse_and_start_executing_query] detects which case we're in and returns a value of
      type [setup_loop_result] indicating this. It's a little weird because we don't want
-     to consume any of the actual data (if applicable) in that funciton, just detect the
+     to consume any of the actual data (if applicable) in that function, just detect the
      mode.
 
      If the response to the [Describe] message was a [RowDescription], we know that the
