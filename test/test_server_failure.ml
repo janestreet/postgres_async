@@ -435,7 +435,7 @@ let%expect_test "asynchronous EOF" =
       printf "in connection handler\n";
       print_s [%message (close_finished_deferred : unit Or_error.t Deferred.t)];
       printf "now sending EOF\n";
-      Ivar.fill send_eof_now ();
+      Ivar.fill_exn send_eof_now ();
       (* postgres_async should notice asynchronously, without issuing a query. *)
       let%bind close_finished = close_finished_deferred in
       print_s [%message (close_finished : unit Or_error.t)];

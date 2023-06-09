@@ -336,7 +336,7 @@ let%expect_test "pushback" =
     let%bind () = (force Utils.do_an_epoll) () in
     [%test_eq: int] rows_handled_before_epoll !rows_handled;
     (* Unblock, and the query will complete. *)
-    Ivar.fill ok_to_proceed_past_10000_rows ();
+    Ivar.fill_exn ok_to_proceed_past_10000_rows ();
     let%bind result = query_done_deferred in
     Or_error.ok_exn result;
     print_s [%message "query complete" (rows_handled : int ref)];
@@ -454,7 +454,7 @@ let%expect_test "query terminated mid execution" =
           ~parameters:[| Some backend_pid |])
     in
     [%expect {| ((t)) |}];
-    Ivar.fill ok_to_proceed_past_10000_rows ();
+    Ivar.fill_exn ok_to_proceed_past_10000_rows ();
     let%bind () =
       match%bind query_done_deferred with
       | Ok () -> assert false

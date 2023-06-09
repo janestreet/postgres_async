@@ -50,7 +50,7 @@ let rec run t =
   let%bind () =
     match Queue.dequeue t.jobs_waiting with
     | Some (Job { start; finished }) ->
-      Ivar.fill start ();
+      Ivar.fill_exn start ();
       let%bind _ = finished in
       return ()
     | None ->

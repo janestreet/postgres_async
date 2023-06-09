@@ -12,7 +12,7 @@ let with_dummy_server func =
       Tcp.Where_to_listen.of_port_chosen_by_os
       (fun _ reader _ ->
          let%bind _ = Reader.peek reader ~len:1 in
-         Ivar.fill got_connection ();
+         Ivar.fill_exn got_connection ();
          Reader.drain reader)
   in
   let got_connection = Ivar.read got_connection in
