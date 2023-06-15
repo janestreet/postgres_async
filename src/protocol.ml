@@ -354,6 +354,32 @@ module Frontend = struct
     let fill t iobuf = Iobuf.Fill.stringo iobuf t
   end
 
+  module CancelRequest = struct
+    let message_type_char = None
+
+    type t =
+      { pid : int
+      ; secret : int
+      }
+
+    let validate_exn (_ : t) = ()
+
+    let payload_length (_ : t) =
+      (* Cancel request code = 12345678 *)
+      4
+      + (* Pid*)
+      4
+      + (* Secret *)
+      4
+    ;;
+
+    let fill t iobuf =
+      Iobuf.Fill.int32_be_trunc iobuf 80877102;
+      Iobuf.Fill.int32_be_trunc iobuf t.pid;
+      Iobuf.Fill.int32_be_trunc iobuf t.secret
+    ;;
+  end
+
   module No_arg : sig
     val flush : string
     val sync : string
@@ -434,6 +460,7 @@ module Frontend = struct
     let execute = Staged.unstage (write_message (module Execute))
     let copy_fail = Staged.unstage (write_message (module CopyFail))
     let copy_data = Staged.unstage (write_message (module CopyData))
+    let cancel_request = Staged.unstage (write_message (module CancelRequest))
     let flush writer = Writer.write writer No_arg.flush
     let sync writer = Writer.write writer No_arg.sync
     let copy_done writer = Writer.write writer No_arg.copy_done

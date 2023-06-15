@@ -41,8 +41,16 @@ module type S = sig
     -> (t, error) Result.t Deferred.t
 
   (** [close] returns an error if there were any problems gracefully tearing down the
-      connection. For sure, when it is determined, the connection is gone. *)
-  val close : t -> (unit, error) Result.t Deferred.t
+      connection. For sure, when it is determined, the connection is gone.
+
+      [try_cancel_statement_before_close] defaults to false. If set to true, [close]
+      will first attempt to cancel any query in progress on [t] before closing the
+      connection, which provides more 'graceful' closing behavior.
+  *)
+  val close
+    :  ?try_cancel_statement_before_close:bool
+    -> t
+    -> (unit, error) Result.t Deferred.t
 
   val close_finished : t -> (unit, error) Result.t Deferred.t
 
@@ -67,6 +75,7 @@ module type S = sig
     -> ?gss_krb_token:string
     -> ?buffer_age_limit:Async_unix.Writer.buffer_age_limit
     -> ?buffer_byte_limit:Byte_units.t
+    -> ?try_cancel_statement_before_close:bool
     -> database:string
     -> on_handler_exception:[ `Raise ]
     -> (t -> 'res Deferred.t)

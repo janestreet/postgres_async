@@ -121,4 +121,5 @@ module Private : sig
   module Protocol = Protocol
 
   val pgasync_error_of_error : Error.t -> Pgasync_error.t
+  val pq_cancel : t -> unit Or_error.t Deferred.t
 end

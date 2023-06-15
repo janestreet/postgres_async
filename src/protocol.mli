@@ -60,6 +60,13 @@ module Frontend : sig
     type t = string
   end
 
+  module CancelRequest : sig
+    type t =
+      { pid : int
+      ; secret : int
+      }
+  end
+
   module Writer : sig
     open Async
 
@@ -73,6 +80,7 @@ module Frontend : sig
     val execute : Writer.t -> Execute.t -> unit
     val copy_fail : Writer.t -> CopyFail.t -> unit
     val copy_data : Writer.t -> CopyData.t -> unit
+    val cancel_request : Writer.t -> CancelRequest.t -> unit
     val flush : Writer.t -> unit
     val sync : Writer.t -> unit
     val copy_done : Writer.t -> unit

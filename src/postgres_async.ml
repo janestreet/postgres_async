@@ -188,6 +188,9 @@ module Expert = struct
     (* [opaque] makes [writer] and [state_changed] inaccessible outside of [T]. *)
     type 'a opaque
 
+    type packed_where_to_connect =
+      | Where_to_connect : 'a Tcp.Where_to_connect.t -> packed_where_to_connect
+
     type t = private
       { writer : Writer.t opaque
       ; reader : Reader.t
@@ -199,10 +202,17 @@ module Expert = struct
           (Pid.t -> string -> unit, read_write) Bus.t Notification_channel.Table.t
       ; backend_key : Types.backend_key Set_once.t
       ; buffer_byte_limit : int
+      ; where_to_connect : packed_where_to_connect
       }
     [@@deriving sexp_of]
 
-    val create_internal : buffer_byte_limit:int -> Reader.t -> Writer.t -> t
+    val create_internal
+      :  buffer_byte_limit:int
+      -> where_to_connect:packed_where_to_connect
+      -> Reader.t
+      -> Writer.t
+      -> t
+
     val failed : t -> Pgasync_error.t -> unit
 
     type to_flush_or_not =
@@ -222,9 +232,18 @@ module Expert = struct
     val wait_for_writer_buffer_to_be_empty : t -> unit Deferred.t
     val status : t -> state
     val close_finished : t -> unit Or_pgasync_error.t Deferred.t
-    val close : t -> unit Or_pgasync_error.t Deferred.t
+
+    val close
+      :  ?try_cancel_statement_before_close:bool
+      -> t
+      -> unit Or_pgasync_error.t Deferred.t
+
+    val pq_cancel : t -> unit Or_error.t Deferred.t
   end = struct
     type 'a opaque = 'a
+
+    type packed_where_to_connect =
+      | Where_to_connect : 'a Tcp.Where_to_connect.t -> packed_where_to_connect
 
     type t =
       { writer : (Writer.t[@sexp.opaque])
@@ -237,6 +256,7 @@ module Expert = struct
           (Pid.t -> string -> unit, read_write) Bus.t Notification_channel.Table.t
       ; backend_key : Types.backend_key Set_once.t
       ; buffer_byte_limit : int
+      ; where_to_connect : (packed_where_to_connect[@sexp.opaque])
       }
     [@@deriving sexp_of]
 
@@ -264,7 +284,7 @@ module Expert = struct
            return ())
     ;;
 
-    let create_internal ~buffer_byte_limit reader writer =
+    let create_internal ~buffer_byte_limit ~where_to_connect reader writer =
       { reader
       ; writer
       ; state = Open
@@ -274,6 +294,7 @@ module Expert = struct
       ; notification_buses = Notification_channel.Table.create ~size:1 ()
       ; backend_key = Set_once.create ()
       ; buffer_byte_limit
+      ; where_to_connect
       }
     ;;
 
@@ -296,11 +317,42 @@ module Expert = struct
     let bytes_pending_in_writer_buffer t = Writer.bytes_to_write t.writer
     let wait_for_writer_buffer_to_be_empty t = Writer.flushed t.writer
 
-    let do_close_gracefully_if_possible t =
+    (* To issue a cancel request, the frontend opens a new connection to the server and
+       sends a CancelRequest message, rather than the StartupMessage message that would
+       ordinarily be sent across a new connection. The server will process this request and
+       then close the connection. For security reasons, no direct reply is made to the
+       cancel request message.
+
+    *)
+    let pq_cancel t =
+      let (Where_to_connect server) = t.where_to_connect in
+      match Set_once.get t.backend_key with
+      | None -> error_s [%message "No backend key found"] |> return
+      | Some { pid; secret } ->
+        (match%bind
+           Monitor.try_with_or_error ~rest:`Log (fun () -> Tcp.connect server)
+         with
+         | Error _ as result -> return result
+         | Ok (_sock, tcp_reader, tcp_writer) ->
+           Protocol.Frontend.(
+             Writer.cancel_request tcp_writer { CancelRequest.pid; secret });
+           let%bind () = Writer.close tcp_writer in
+           let%bind () = Reader.close tcp_reader in
+           return (Ok ()))
+    ;;
+
+    let do_close_gracefully_if_possible ~try_cancel_statement_before_close t =
       match t.state with
       | Failed _ | Closed_gracefully | Closing -> return ()
       | Open ->
         set_state t Closing;
+        (match try_cancel_statement_before_close with
+         | false -> ()
+         | true ->
+           don't_wait_for
+             (match%map Monitor.try_with_join_or_error (fun () -> pq_cancel t) with
+              | Ok () -> ()
+              | Error (_ : Error.t) -> ()));
         let closed_gracefully_deferred =
           Query_sequencer.enqueue t.sequencer (fun () ->
             catch_write_errors t ~flush_message:Not_required ~f:(fun writer ->
@@ -345,8 +397,9 @@ module Expert = struct
         close_finished t
     ;;
 
-    let close t =
-      don't_wait_for (do_close_gracefully_if_possible t);
+    let close ?(try_cancel_statement_before_close = false) t =
+      don't_wait_for
+        (do_close_gracefully_if_possible ~try_cancel_statement_before_close t);
       close_finished t
     ;;
   end
@@ -840,14 +893,18 @@ module Expert = struct
       Monitor.try_with_or_error ~rest:`Log (fun () -> Unix.getlogin ()))
   ;;
 
-  type packed_where_to_connect =
-    | Where_to_connect : 'a Tcp.Where_to_connect.t -> packed_where_to_connect
-
   let default_where_to_connect =
     lazy (Where_to_connect (Tcp.Where_to_connect.of_file "/run/postgresql/.s.PGSQL.5432"))
   ;;
 
-  let maybe_ssl_wrap ~buffer_byte_limit ~interrupt ~ssl_mode ~tcp_reader ~tcp_writer =
+  let maybe_ssl_wrap
+        ~buffer_byte_limit
+        ~interrupt
+        ~where_to_connect
+        ~ssl_mode
+        ~tcp_reader
+        ~tcp_writer
+    =
     let negotiate_ssl ~required =
       match Protocol.Frontend.Writer.ssl_request tcp_writer () with
       | exception exn -> return (Or_error.of_exn exn)
@@ -888,7 +945,13 @@ module Expert = struct
                  tcp_reader
                  tcp_writer
                  ~f:(fun (_ : Async_ssl.Ssl.Connection.t) ssl_reader ssl_writer ->
-                   let t = create_internal ~buffer_byte_limit ssl_reader ssl_writer in
+                   let t =
+                     create_internal
+                       ~where_to_connect
+                       ~buffer_byte_limit
+                       ssl_reader
+                       ssl_writer
+                   in
                    let close_finished_deferred =
                      let%bind (_ : unit Or_pgasync_error.t) = close_finished t in
                      return ()
@@ -908,7 +971,13 @@ module Expert = struct
               (* 'N' means the server is unwilling to use SSL connections, but is happy to
                  proceed without encryption (and sending a [StartupMessage] on the same
                  connection is the correct way to do so). *)
-              return (Ok (create_internal ~buffer_byte_limit tcp_reader tcp_writer)))
+              return
+                (Ok
+                   (create_internal
+                      ~where_to_connect
+                      ~buffer_byte_limit
+                      tcp_reader
+                      tcp_writer)))
          | `Ok response_char ->
            (* 'E' (or potentially another character?) can indicate that the server
               doesn't understand the request, and we must re-start the connection from
@@ -928,7 +997,9 @@ module Expert = struct
     in
     match (ssl_mode : Ssl_mode.t) with
     | Disable ->
-      let t = create_internal ~buffer_byte_limit tcp_reader tcp_writer in
+      let t =
+        create_internal ~where_to_connect ~buffer_byte_limit tcp_reader tcp_writer
+      in
       return (Ok t)
     | Prefer -> negotiate_ssl ~required:false
     | Require -> negotiate_ssl ~required:true
@@ -939,8 +1010,9 @@ module Expert = struct
         ~buffer_byte_limit
         ~interrupt
         ~ssl_mode
-        server
+        where_to_connect
     =
+    let (Where_to_connect server) = where_to_connect in
     match%bind
       Monitor.try_with_or_error ~rest:`Log (fun () ->
         Tcp.connect ~buffer_age_limit ~interrupt server)
@@ -948,7 +1020,13 @@ module Expert = struct
     | Error _ as result -> return result
     | Ok (_sock, tcp_reader, tcp_writer) ->
       (match%bind
-         maybe_ssl_wrap ~buffer_byte_limit ~interrupt ~ssl_mode ~tcp_reader ~tcp_writer
+         maybe_ssl_wrap
+           ~where_to_connect
+           ~buffer_byte_limit
+           ~interrupt
+           ~ssl_mode
+           ~tcp_reader
+           ~tcp_writer
        with
        | Error _ as result ->
          let%bind () = Writer.close tcp_writer in
@@ -973,7 +1051,7 @@ module Expert = struct
         ~database
         ()
     =
-    let (Where_to_connect server) =
+    let where_to_connect =
       match server with
       | Some x -> Where_to_connect x
       | None -> force default_where_to_connect
@@ -992,7 +1070,7 @@ module Expert = struct
            ~buffer_byte_limit:(Byte_units.bytes_int_exn buffer_byte_limit)
            ~interrupt
            ~ssl_mode
-           server
+           where_to_connect
        with
        | Error error -> return (Error (Pgasync_error.of_error error))
        | Ok (t, writer_failed) ->
@@ -1029,6 +1107,7 @@ module Expert = struct
         ?gss_krb_token
         ?buffer_age_limit
         ?buffer_byte_limit
+        ?try_cancel_statement_before_close
         ~database
         ~on_handler_exception:`Raise
         func
@@ -1050,11 +1129,15 @@ module Expert = struct
     | Ok t ->
       (match%bind Monitor.try_with ~run:`Now ~rest:`Raise (fun () -> func t) with
        | Ok _ as ok_res ->
-         let%bind (_ : unit Or_pgasync_error.t) = close t in
+         let%bind (_ : unit Or_pgasync_error.t) =
+           close ?try_cancel_statement_before_close t
+         in
          return ok_res
        | Error exn ->
          don't_wait_for
-           (let%bind (_ : unit Or_pgasync_error.t) = close t in
+           (let%bind (_ : unit Or_pgasync_error.t) =
+              close ?try_cancel_statement_before_close t
+            in
             return ());
          raise exn)
   ;;
@@ -1636,7 +1719,10 @@ let connect
   >>| Or_pgasync_error.to_or_error
 ;;
 
-let close t = Expert.close t >>| Or_pgasync_error.to_or_error
+let close ?try_cancel_statement_before_close t =
+  Expert.close ?try_cancel_statement_before_close t >>| Or_pgasync_error.to_or_error
+;;
+
 let close_finished t = Expert.close_finished t >>| Or_pgasync_error.to_or_error
 
 type state =
@@ -1667,6 +1753,7 @@ let with_connection
       ?gss_krb_token
       ?buffer_age_limit
       ?buffer_byte_limit
+      ?try_cancel_statement_before_close
       ~database
       ~on_handler_exception:`Raise
       func
@@ -1680,6 +1767,7 @@ let with_connection
     ?gss_krb_token
     ?buffer_age_limit
     ?buffer_byte_limit
+    ?try_cancel_statement_before_close
     ~database
     ~on_handler_exception:`Raise
     func
@@ -1719,4 +1807,5 @@ module Private = struct
   module Protocol = Protocol
 
   let pgasync_error_of_error = Pgasync_error.of_error
+  let pq_cancel = Expert.pq_cancel
 end
