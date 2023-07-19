@@ -41,56 +41,120 @@ end
 
    We'll revisit it if someone wants it. *)
 
-module Frontend = struct
-  module Shared = struct
-    let validate_null_terminated_exn ~field_name str =
-      if String.mem str '\x00'
-      then raise_s [%message "String may not contain nulls" field_name str]
-    ;;
+module Shared = struct
+  let validate_null_terminated_exn ~field_name str =
+    if String.mem str '\x00'
+    then raise_s [%message "String may not contain nulls" field_name str]
+  ;;
 
-    let fill_null_terminated iobuf str =
-      Iobuf.Fill.stringo iobuf str;
-      Iobuf.Fill.char iobuf '\x00'
-    ;;
+  let fill_null_terminated iobuf str =
+    Iobuf.Fill.stringo iobuf str;
+    Iobuf.Fill.char iobuf '\x00'
+  ;;
 
-    let int16_min = -32768
-    let int16_max = 32767
+  let int16_min = -32768
+  let int16_max = 32767
 
-    let int32_min =
-      match Word_size.word_size with
-      | W64 -> Int32.to_int_exn Int32.min_value
-      | W32 -> Int.min_value
-    ;;
+  let int32_min =
+    match Word_size.word_size with
+    | W64 -> Int32.to_int_exn Int32.min_value
+    | W32 -> Int.min_value
+  ;;
 
-    let int32_max =
-      match Word_size.word_size with
-      | W64 -> Int32.to_int_exn Int32.max_value
-      | W32 -> Int.max_value
-    ;;
+  let int32_max =
+    match Word_size.word_size with
+    | W64 -> Int32.to_int_exn Int32.max_value
+    | W32 -> Int.max_value
+  ;;
 
-    let () =
-      match Word_size.word_size with
-      | W64 ->
-        assert (String.equal (Int.to_string int32_min) "-2147483648");
-        assert (String.equal (Int.to_string int32_max) "2147483647")
-      | W32 ->
-        assert (String.equal (Int.to_string int32_min) "-1073741824");
-        assert (String.equal (Int.to_string int32_max) "1073741823")
-    ;;
+  let () =
+    match Word_size.word_size with
+    | W64 ->
+      assert (String.equal (Int.to_string int32_min) "-2147483648");
+      assert (String.equal (Int.to_string int32_max) "2147483647")
+    | W32 ->
+      assert (String.equal (Int.to_string int32_min) "-1073741824");
+      assert (String.equal (Int.to_string int32_max) "1073741823")
+  ;;
 
-    let[@inline always] fill_int16_be iobuf value =
-      match int16_min <= value && value <= int16_max with
-      | true -> Iobuf.Fill.int16_be_trunc iobuf value
-      | false -> failwithf "int16 out of range: %i" value ()
-    ;;
+  let[@inline always] fill_int16_be iobuf value =
+    match int16_min <= value && value <= int16_max with
+    | true -> Iobuf.Fill.int16_be_trunc iobuf value
+    | false -> failwithf "int16 out of range: %i" value ()
+  ;;
 
-    let[@inline always] fill_int32_be iobuf value =
-      match int32_min <= value && value <= int32_max with
-      | true -> Iobuf.Fill.int32_be_trunc iobuf value
-      | false -> failwithf "int32 out of range: %i" value ()
-    ;;
+  let[@inline always] fill_int32_be iobuf value =
+    match int32_min <= value && value <= int32_max with
+    | true -> Iobuf.Fill.int32_be_trunc iobuf value
+    | false -> failwithf "int32 out of range: %i" value ()
+  ;;
+
+  let find_null_exn iobuf =
+    let rec loop ~iobuf ~length ~pos =
+      if Char.( = ) (Iobuf.Peek.char iobuf ~pos) '\x00'
+      then pos
+      else if pos > length - 1
+      then failwith "find_null_exn could not find \\x00"
+      else loop ~iobuf ~length ~pos:(pos + 1)
+    in
+    loop ~iobuf ~length:(Iobuf.length iobuf) ~pos:0
+  ;;
+
+  let consume_cstring_exn iobuf =
+    let len = find_null_exn iobuf in
+    let res = Iobuf.Consume.string iobuf ~len ~str_pos:0 in
+    let zero = Iobuf.Consume.char iobuf in
+    assert (Char.( = ) zero '\x00');
+    res
+  ;;
+
+  module type Message_type = sig
+    val message_type_char : char option
+
+    type t
+
+    val validate_exn : t -> unit
+    val payload_length : t -> int
+    val fill : t -> (read_write, Iobuf.seek) Iobuf.t -> unit
   end
 
+  type 'a with_computed_length =
+    { payload_length : int
+    ; value : 'a
+    }
+
+  let write_message (type a) (module M : Message_type with type t = a) =
+    let full_length { payload_length; _ } =
+      match M.message_type_char with
+      | None -> payload_length + 4
+      | Some _ -> payload_length + 5
+    in
+    let blit_to_bigstring with_computed_length bigstring ~pos =
+      let iobuf =
+        Iobuf.of_bigstring bigstring ~pos ~len:(full_length with_computed_length)
+      in
+      (match M.message_type_char with
+       | None -> ()
+       | Some c -> Iobuf.Fill.char iobuf c);
+      let { payload_length; value } = with_computed_length in
+      fill_int32_be iobuf (payload_length + 4);
+      M.fill value iobuf;
+      match Iobuf.is_empty iobuf with
+      | true -> ()
+      | false -> failwith "postgres message filler lied about length"
+    in
+    Staged.stage (fun writer value ->
+      M.validate_exn value;
+      let payload_length = M.payload_length value in
+      Async.Writer.write_gen_whole
+        writer
+        { payload_length; value }
+        ~length:full_length
+        ~blit_to_bigstring)
+  ;;
+end
+
+module Frontend = struct
   module SSLRequest = struct
     let message_type_char = None
 
@@ -149,6 +213,40 @@ module Frontend = struct
       Shared.fill_null_terminated iobuf database;
       Iobuf.Fill.char iobuf '\x00'
     ;;
+
+    let consume_exn iobuf =
+      let (_protocol : int) = Iobuf.Consume.int32_be iobuf in
+      let rec loop ~iobuf ~fields_rev =
+        match Iobuf.Peek.char iobuf ~pos:0 with
+        | '\x00' ->
+          let (_ : Char.t) = Iobuf.Consume.char iobuf in
+          List.rev fields_rev
+        | _other ->
+          let name = Shared.consume_cstring_exn iobuf |> String.lowercase in
+          let value = Shared.consume_cstring_exn iobuf in
+          loop ~iobuf ~fields_rev:((name, value) :: fields_rev)
+      in
+      let fields = loop ~iobuf ~fields_rev:[] in
+      let user =
+        List.find_map_exn fields ~f:(fun (name, value) ->
+          match String.equal name "user" with
+          | true -> Some value
+          | false -> None)
+      in
+      let database =
+        List.find_map_exn fields ~f:(fun (name, value) ->
+          match String.equal name "database" with
+          | true -> Some value
+          | false -> None)
+      in
+      { user; database }
+    ;;
+
+    let consume iobuf =
+      match consume_exn iobuf with
+      | exception exn -> error_s [%message "Failed to parse StartupMessage" (exn : Exn.t)]
+      | t -> Ok t
+    ;;
   end
 
   module PasswordMessage = struct
@@ -173,6 +271,25 @@ module Frontend = struct
       match t with
       | Cleartext_or_md5_hex password -> Shared.fill_null_terminated iobuf password
       | Gss_binary_blob blob -> Iobuf.Fill.stringo iobuf blob
+    ;;
+
+    let consume_krb_exn iobuf ~length =
+      let blob = Iobuf.Consume.string iobuf ~len:length ~str_pos:0 in
+      Gss_binary_blob blob
+    ;;
+
+    let consume_krb iobuf ~length =
+      match consume_krb_exn iobuf ~length with
+      | exception exn ->
+        error_s [%message "Failed to parse expected GSS PasswordMessage" (exn : Exn.t)]
+      | t -> Ok t
+    ;;
+
+    let consume_password iobuf =
+      match Shared.consume_cstring_exn iobuf with
+      | exception exn ->
+        error_s [%message "Failed to parse expected PasswordMessage" (exn : Exn.t)]
+      | str -> Ok (Cleartext_or_md5_hex str)
     ;;
   end
 
@@ -405,51 +522,7 @@ module Frontend = struct
   module Writer = struct
     open Async
 
-    module type Message_type = sig
-      val message_type_char : char option
-
-      type t
-
-      val validate_exn : t -> unit
-      val payload_length : t -> int
-      val fill : t -> (read_write, Iobuf.seek) Iobuf.t -> unit
-    end
-
-    type 'a with_computed_length =
-      { payload_length : int
-      ; value : 'a
-      }
-
-    let write_message (type a) (module M : Message_type with type t = a) =
-      let full_length { payload_length; _ } =
-        match M.message_type_char with
-        | None -> payload_length + 4
-        | Some _ -> payload_length + 5
-      in
-      let blit_to_bigstring with_computed_length bigstring ~pos =
-        let iobuf =
-          Iobuf.of_bigstring bigstring ~pos ~len:(full_length with_computed_length)
-        in
-        (match M.message_type_char with
-         | None -> ()
-         | Some c -> Iobuf.Fill.char iobuf c);
-        let { payload_length; value } = with_computed_length in
-        Shared.fill_int32_be iobuf (payload_length + 4);
-        M.fill value iobuf;
-        match Iobuf.is_empty iobuf with
-        | true -> ()
-        | false -> failwith "postgres message filler lied about length"
-      in
-      Staged.stage (fun writer value ->
-        M.validate_exn value;
-        let payload_length = M.payload_length value in
-        Writer.write_gen_whole
-          writer
-          { payload_length; value }
-          ~length:full_length
-          ~blit_to_bigstring)
-    ;;
-
+    let write_message = Shared.write_message
     let ssl_request = Staged.unstage (write_message (module SSLRequest))
     let startup_message = Staged.unstage (write_message (module StartupMessage))
     let password_message = Staged.unstage (write_message (module PasswordMessage))
@@ -548,27 +621,6 @@ module Backend = struct
           ok))
   ;;
 
-  module Shared = struct
-    let find_null_exn iobuf =
-      let rec loop ~iobuf ~length ~pos =
-        if Char.( = ) (Iobuf.Peek.char iobuf ~pos) '\x00'
-        then pos
-        else if pos > length - 1
-        then failwith "find_null_exn could not find \\x00"
-        else loop ~iobuf ~length ~pos:(pos + 1)
-      in
-      loop ~iobuf ~length:(Iobuf.length iobuf) ~pos:0
-    ;;
-
-    let consume_cstring_exn iobuf =
-      let len = find_null_exn iobuf in
-      let res = Iobuf.Consume.string iobuf ~len ~str_pos:0 in
-      let zero = Iobuf.Consume.char iobuf in
-      assert (Char.( = ) zero '\x00');
-      res
-    ;;
-  end
-
   module Error_or_notice_field = struct
     type other = char [@@deriving equal, sexp_of]
 
@@ -617,6 +669,28 @@ module Backend = struct
         (* the spec requires that we silently ignore unrecognised codes. *)
         Other other
     ;;
+
+    let to_protocol = function
+      | Severity -> 'S'
+      | Severity_non_localised -> 'V'
+      | Code -> 'C'
+      | Message -> 'M'
+      | Detail -> 'D'
+      | Hint -> 'H'
+      | Position -> 'P'
+      | Internal_position -> 'p'
+      | Internal_query -> 'q'
+      | Where -> 'W'
+      | Schema -> 's'
+      | Table -> 't'
+      | Column -> 'c'
+      | Data_type -> 'd'
+      | Constraint -> 'n'
+      | File -> 'F'
+      | Line -> 'L'
+      | Routine -> 'R'
+      | Other c -> c
+    ;;
   end
 
   module Error_or_Notice = struct
@@ -624,6 +698,7 @@ module Backend = struct
       { error_code : string
       ; all_fields : (Error_or_notice_field.t * string) list
       }
+    [@@deriving sexp_of]
 
     let consume_exn iobuf =
       let rec loop ~iobuf ~fields_rev =
@@ -651,6 +726,29 @@ module Backend = struct
       match Error_or_Notice.consume_exn iobuf with
       | exception exn -> error_s [%message "Failed to parse ErrorResponse" (exn : Exn.t)]
       | t -> Ok t
+    ;;
+
+    let message_type_char = Some 'E'
+    let validate_exn _t = ()
+
+    let payload_length { error_code; all_fields } =
+      1
+      + String.length error_code
+      + 1
+      + List.fold all_fields ~init:0 ~f:(fun acc ((_ : Error_or_notice_field.t), data) ->
+        (* 1 for code, 1 for null term *)
+        1 + String.length data + 1 + acc)
+      (* zero terminates *)
+      + 1
+    ;;
+
+    let fill { error_code; all_fields } iobuf =
+      Iobuf.Fill.char iobuf (Error_or_notice_field.to_protocol Code);
+      Shared.fill_null_terminated iobuf error_code;
+      List.iter all_fields ~f:(fun (field, data) ->
+        Iobuf.Fill.char iobuf (Error_or_notice_field.to_protocol field);
+        Shared.fill_null_terminated iobuf data);
+      Iobuf.Fill.char iobuf '\x00'
     ;;
   end
 
@@ -700,6 +798,38 @@ module Backend = struct
         error_s [%message "Failed to parse AuthenticationRequest" (exn : Exn.t)]
       | t -> Result.Ok t
     ;;
+
+    let message_type_char = Some 'R'
+    let validate_exn _t = ()
+
+    let payload_length t =
+      let var_length =
+        match t with
+        | Ok | KerberosV5 | CleartextPassword | SCMCredential | GSS | SSPI -> 0
+        | MD5Password { salt } -> String.length salt
+        | GSSContinue { data } -> String.length data
+      in
+      4 + var_length
+    ;;
+
+    let fill t iobuf =
+      let code =
+        match t with
+        | Ok -> 0
+        | KerberosV5 -> 2
+        | CleartextPassword -> 3
+        | MD5Password { salt = _ } -> 5
+        | SCMCredential -> 6
+        | GSS -> 7
+        | SSPI -> 9
+        | GSSContinue { data = _ } -> 8
+      in
+      Shared.fill_int32_be iobuf code;
+      match t with
+      | Ok | KerberosV5 | CleartextPassword | SCMCredential | GSS | SSPI -> ()
+      | MD5Password { salt } -> Iobuf.Fill.stringo iobuf salt
+      | GSSContinue { data } -> Iobuf.Fill.stringo iobuf data
+    ;;
   end
 
   module ParameterStatus = struct
@@ -720,6 +850,15 @@ module Backend = struct
         error_s [%message "Failed to parse ParameterStatus" (exn : Exn.t)]
       | t -> Ok t
     ;;
+
+    let message_type_char = Some 'S'
+    let validate_exn _t = ()
+    let payload_length { key; data } = String.length key + 1 + String.length data + 1
+
+    let fill { key; data } iobuf =
+      Shared.fill_null_terminated iobuf key;
+      Shared.fill_null_terminated iobuf data
+    ;;
   end
 
   module BackendKeyData = struct
@@ -735,6 +874,15 @@ module Backend = struct
       match consume_exn iobuf with
       | exception exn -> error_s [%message "Failed to parse BackendKeyData" (exn : Exn.t)]
       | t -> Ok t
+    ;;
+
+    let message_type_char = Some 'K'
+    let validate_exn _t = ()
+    let payload_length _t = 8
+
+    let fill ({ pid; secret } : Types.backend_key) iobuf =
+      Shared.fill_int32_be iobuf pid;
+      Shared.fill_int32_be iobuf secret
     ;;
   end
 
@@ -783,6 +931,20 @@ module Backend = struct
       match consume_exn iobuf with
       | exception exn -> error_s [%message "Failed to parse ReadyForQuery" (exn : Exn.t)]
       | t -> Ok t
+    ;;
+
+    let message_type_char = Some 'Z'
+    let validate_exn _t = ()
+    let payload_length _t = 1
+
+    let fill t iobuf =
+      let code =
+        match t with
+        | Idle -> 'I'
+        | In_transaction -> 'T'
+        | In_failed_transaction -> 'E'
+      in
+      Iobuf.Fill.char iobuf code
     ;;
   end
 
@@ -949,5 +1111,16 @@ module Backend = struct
         error_s [%message "Failed to parse CommandComplete" (exn : Exn.t)]
       | t -> Ok t
     ;;
+  end
+
+  module Writer = struct
+    open! Async
+
+    let write_message = Shared.write_message
+    let auth_message = Staged.unstage (write_message (module AuthenticationRequest))
+    let ready_for_query = Staged.unstage (write_message (module ReadyForQuery))
+    let error_response = Staged.unstage (write_message (module ErrorResponse))
+    let backend_key = Staged.unstage (write_message (module BackendKeyData))
+    let parameter_status = Staged.unstage (write_message (module ParameterStatus))
   end
 end

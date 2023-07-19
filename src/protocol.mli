@@ -6,12 +6,17 @@ module Frontend : sig
       { user : string
       ; database : string
       }
+
+    val consume : ([> read ], Iobuf.seek) Iobuf.t -> t Or_error.t
   end
 
   module PasswordMessage : sig
     type t =
       | Cleartext_or_md5_hex of string
       | Gss_binary_blob of string
+
+    val consume_krb : ([> read ], Iobuf.seek) Iobuf.t -> length:int -> t Or_error.t
+    val consume_password : ([> read ], Iobuf.seek) Iobuf.t -> t Or_error.t
   end
 
   module Parse : sig
@@ -161,6 +166,7 @@ module Backend : sig
       { error_code : string
       ; all_fields : (Error_or_notice_field.t * string) list
       }
+    [@@deriving sexp_of]
 
     val consume : ([> read ], Iobuf.seek) Iobuf.t -> t Or_error.t
   end
@@ -297,5 +303,15 @@ module Backend : sig
     type t = string
 
     val consume : ([> read ], Iobuf.seek) Iobuf.t -> t Or_error.t
+  end
+
+  module Writer : sig
+    open Async
+
+    val auth_message : Writer.t -> AuthenticationRequest.t -> unit
+    val ready_for_query : Writer.t -> ReadyForQuery.t -> unit
+    val error_response : Writer.t -> ErrorResponse.t -> unit
+    val backend_key : Writer.t -> Types.backend_key -> unit
+    val parameter_status : Writer.t -> ParameterStatus.t -> unit
   end
 end

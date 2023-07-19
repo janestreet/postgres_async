@@ -214,6 +214,7 @@ module Expert = struct
       -> t
 
     val failed : t -> Pgasync_error.t -> unit
+    val writer : t -> Writer.t
 
     type to_flush_or_not =
       | Not_required
@@ -259,6 +260,8 @@ module Expert = struct
       ; where_to_connect : (packed_where_to_connect[@sexp.opaque])
       }
     [@@deriving sexp_of]
+
+    let writer t : Writer.t = t.writer
 
     let set_state t state =
       t.state <- state;
@@ -1039,7 +1042,7 @@ module Expert = struct
          return (Ok (t, writer_failed)))
   ;;
 
-  let connect
+  let create_and_login
         ?(interrupt = Deferred.never ())
         ?(ssl_mode = Ssl_mode.Disable)
         ?server
@@ -1093,9 +1096,70 @@ module Expert = struct
           | `Interrupt -> login_failed (Pgasync_error.of_string "login interrupted")
           | `Result (Connection_closed err) -> return (Error err)
           | `Result (Done (Error err)) -> login_failed err
-          | `Result (Done (Ok ())) ->
-            handle_asynchronous_messages t;
-            return (Ok t)))
+          | `Result (Done (Ok ())) -> return (Ok t)))
+  ;;
+
+  let login_and_get_raw
+        ?interrupt
+        ?ssl_mode
+        ?server
+        ?user
+        ?password
+        ?gss_krb_token
+        ?buffer_age_limit
+        ?buffer_byte_limit
+        ~database
+        ()
+    =
+    match%bind
+      create_and_login
+        ?interrupt
+        ?ssl_mode
+        ?server
+        ?user
+        ?password
+        ?gss_krb_token
+        ?buffer_age_limit
+        ?buffer_byte_limit
+        ~database
+        ()
+    with
+    | Error _ as result -> return result
+    | Ok t ->
+      (* Don't handle async messages here, we're
+         passing out the raw reader and writer *)
+      Ok (t.reader, writer t) |> return
+  ;;
+
+  let connect
+        ?interrupt
+        ?ssl_mode
+        ?server
+        ?user
+        ?password
+        ?gss_krb_token
+        ?buffer_age_limit
+        ?buffer_byte_limit
+        ~database
+        ()
+    =
+    match%bind
+      create_and_login
+        ?interrupt
+        ?ssl_mode
+        ?server
+        ?user
+        ?password
+        ?gss_krb_token
+        ?buffer_age_limit
+        ?buffer_byte_limit
+        ~database
+        ()
+    with
+    | Error _ as result -> return result
+    | Ok t ->
+      handle_asynchronous_messages t;
+      return (Ok t)
   ;;
 
   let with_connection
@@ -1808,4 +1872,5 @@ module Private = struct
 
   let pgasync_error_of_error = Pgasync_error.of_error
   let pq_cancel = Expert.pq_cancel
+  let login_and_get_raw = Expert.login_and_get_raw
 end
