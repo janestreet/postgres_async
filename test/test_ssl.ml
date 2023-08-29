@@ -151,7 +151,7 @@ let%expect_test "SSL negotation failure does not raise" =
      (monitor.ml.Error
       (Ssl_error
        ("error:1408F10B:SSL routines:ssl3_get_record:wrong version number")
-       lib/async_ssl/src/ssl.ml:213:20)
+       lib/async_ssl/src/ssl.ml:218:20)
       ("<backtrace elided in test>" "Caught by monitor ssl_pipe"))) |}];
   Deferred.unit
 ;;

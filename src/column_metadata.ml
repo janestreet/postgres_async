@@ -6,6 +6,6 @@ type t =
   ; format : [ `Text ]
   ; pg_type_oid : int
   }
-[@@deriving fields]
+[@@deriving fields ~getters ~iterators:create]
 
 let create = Fields.create

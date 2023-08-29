@@ -123,19 +123,28 @@ module Private : sig
   val pgasync_error_of_error : Error.t -> Pgasync_error.t
   val pq_cancel : t -> unit Or_error.t Deferred.t
 
-  (** Creates a TCP connection to the server, returning the Reader and
-      Writer after the login message flow has been completed successfully.
-      Will not have asynchronous message handling running *)
-  val login_and_get_raw
-    :  ?interrupt:unit Deferred.t
-    -> ?ssl_mode:Ssl_mode.t
-    -> ?server:[< Socket.Address.t ] Tcp.Where_to_connect.t
-    -> ?user:string
-    -> ?password:string
-    -> ?gss_krb_token:string
-    -> ?buffer_age_limit:[ `At_most of Core_private.Span_float.t | `Unlimited ]
-    -> ?buffer_byte_limit:Byte_units.t
-    -> database:string
-    -> unit
-    -> (Reader.t * Writer.t, Pgasync_error.t) result Deferred.t
+  module Without_background_asynchronous_message_handling : sig
+    type t
+
+    (** Creates a TCP connection to the server, returning the Reader and
+        Writer after the login message flow has been completed successfully.
+        Will not have asynchronous message handling running *)
+    val login_and_get_raw
+      :  ?interrupt:unit Deferred.t
+      -> ?ssl_mode:Ssl_mode.t
+      -> ?server:[< Socket.Address.t ] Tcp.Where_to_connect.t
+      -> ?password:string
+      -> ?gss_krb_token:string
+      -> ?buffer_age_limit:[ `At_most of Core_private.Span_float.t | `Unlimited ]
+      -> ?buffer_byte_limit:Byte_units.t
+      -> startup_message:Protocol.Frontend.StartupMessage.t
+      -> unit
+      -> (t, Pgasync_error.t) result Deferred.t
+
+    val reader : t -> Reader.t
+    val writer : t -> Writer.t
+    val backend_key : t -> Types.backend_key option
+    val runtime_parameters : t -> string String.Map.t
+    val pq_cancel : t -> unit Deferred.Or_error.t
+  end
 end

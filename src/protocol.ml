@@ -177,14 +177,34 @@ module Frontend = struct
     type t =
       { user : string
       ; database : string
+      ; replication : string option
+      ; options : string list
+      ; runtime_parameters : string String.Map.t
       }
 
-    let validate_exn { user; database } =
+    let validate_exn { user; database; replication; options; runtime_parameters } =
       Shared.validate_null_terminated_exn ~field_name:"user" user;
-      Shared.validate_null_terminated_exn ~field_name:"database" database
+      Shared.validate_null_terminated_exn ~field_name:"database" database;
+      (match replication with
+       | Some replication ->
+         Shared.validate_null_terminated_exn ~field_name:"replication" replication
+       | None -> ());
+      List.iter options ~f:(Shared.validate_null_terminated_exn ~field_name:"options");
+      Map.iteri runtime_parameters ~f:(fun ~key:field_name ~data ->
+        Shared.validate_null_terminated_exn ~field_name data;
+        Shared.validate_null_terminated_exn ~field_name:(field_name ^ "-data") data)
     ;;
 
-    let payload_length { user; database } =
+    let escape_option_space option =
+      String.to_list option
+      |> List.concat_map ~f:(fun char ->
+        match char with
+        | ' ' | '\\' -> [ '\\'; char ]
+        | (_ : Char.t) -> [ char ])
+      |> String.of_char_list
+    ;;
+
+    let payload_length { user; database; replication; options; runtime_parameters } =
       (* major and minor version: *)
       2
       + 2
@@ -198,11 +218,29 @@ module Frontend = struct
       + 1
       + String.length database
       + 1
+      + (match replication with
+        | Some replication -> 11 + 1 + String.length replication + 1
+        | None -> 0)
+      + (match List.is_empty options with
+        | true -> 0
+        | false ->
+          7
+          + 1
+          + List.sum
+              (module Int)
+              options
+              ~f:(fun value ->
+                let escaped_value = escape_option_space value in
+                1 + String.length escaped_value))
       (* end of list: *)
+      + List.sum
+          (module Int)
+          (Map.to_alist runtime_parameters)
+          ~f:(fun (key, data) -> String.length key + 1 + String.length data + 1)
       + 1
     ;;
 
-    let fill { user; database } iobuf =
+    let fill { user; database; replication; options; runtime_parameters } iobuf =
       (* major *)
       Iobuf.Fill.int16_be_trunc iobuf 3;
       (* minor *)
@@ -211,7 +249,35 @@ module Frontend = struct
       Shared.fill_null_terminated iobuf user;
       Iobuf.Fill.stringo iobuf "database\x00";
       Shared.fill_null_terminated iobuf database;
+      (match replication with
+       | None -> ()
+       | Some replication ->
+         Iobuf.Fill.stringo iobuf "replication\x00";
+         Shared.fill_null_terminated iobuf replication);
+      (match List.is_empty options with
+       | true -> ()
+       | false ->
+         Iobuf.Fill.stringo iobuf "options\x00";
+         List.map options ~f:escape_option_space
+         |> String.concat ~sep:" "
+         |> Shared.fill_null_terminated iobuf);
+      Map.iteri runtime_parameters ~f:(fun ~key ~data ->
+        Shared.fill_null_terminated iobuf key;
+        Shared.fill_null_terminated iobuf data);
       Iobuf.Fill.char iobuf '\x00'
+    ;;
+
+    let parse_options_str s =
+      let (_ : bool), parts, remainder =
+        String.fold s ~init:(false, [], []) ~f:(fun (escaped, parts, current) char ->
+          match char, escaped with
+          | '\\', _ -> true, parts, current
+          | ' ', true -> false, parts, ' ' :: current
+          | ' ', false -> false, (List.rev current |> String.of_char_list) :: parts, []
+          | _, false -> false, parts, char :: current
+          | _, true -> false, parts, char :: '\\' :: current)
+      in
+      (List.rev remainder |> String.of_char_list) :: parts |> List.rev
     ;;
 
     let consume_exn iobuf =
@@ -226,20 +292,20 @@ module Frontend = struct
           let value = Shared.consume_cstring_exn iobuf in
           loop ~iobuf ~fields_rev:((name, value) :: fields_rev)
       in
-      let fields = loop ~iobuf ~fields_rev:[] in
-      let user =
-        List.find_map_exn fields ~f:(fun (name, value) ->
-          match String.equal name "user" with
-          | true -> Some value
-          | false -> None)
+      let fields = loop ~iobuf ~fields_rev:[] |> String.Map.of_alist_exn in
+      let user = Map.find_exn fields "user" in
+      let database = Map.find fields "database" |> Option.value ~default:user in
+      let replication = Map.find fields "replication" in
+      let options =
+        Map.find fields "options" |> Option.value_map ~default:[] ~f:parse_options_str
       in
-      let database =
-        List.find_map_exn fields ~f:(fun (name, value) ->
-          match String.equal name "database" with
-          | true -> Some value
-          | false -> None)
+      let runtime_parameters =
+        List.fold
+          [ "user"; "database"; "replication"; "options" ]
+          ~init:fields
+          ~f:Map.remove
       in
-      { user; database }
+      { user; database; replication; options; runtime_parameters }
     ;;
 
     let consume iobuf =
@@ -494,6 +560,18 @@ module Frontend = struct
       Iobuf.Fill.int32_be_trunc iobuf 80877102;
       Iobuf.Fill.int32_be_trunc iobuf t.pid;
       Iobuf.Fill.int32_be_trunc iobuf t.secret
+    ;;
+
+    let consume_exn iobuf =
+      let pid = Iobuf.Consume.int32_be iobuf in
+      let secret = Iobuf.Consume.int32_be iobuf in
+      { pid; secret }
+    ;;
+
+    let consume iobuf =
+      match consume_exn iobuf with
+      | exception exn -> error_s [%message "Failed to parse CacnelRequest" (exn : Exn.t)]
+      | t -> Ok t
     ;;
   end
 

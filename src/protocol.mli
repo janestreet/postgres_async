@@ -5,6 +5,9 @@ module Frontend : sig
     type t =
       { user : string
       ; database : string
+      ; replication : string option
+      ; options : string list
+      ; runtime_parameters : string String.Map.t
       }
 
     val consume : ([> read ], Iobuf.seek) Iobuf.t -> t Or_error.t
@@ -70,6 +73,8 @@ module Frontend : sig
       { pid : int
       ; secret : int
       }
+
+    val consume : ([> read ], Iobuf.seek) Iobuf.t -> t Or_error.t
   end
 
   module Writer : sig

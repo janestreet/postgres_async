@@ -215,6 +215,9 @@ module Expert = struct
 
     val failed : t -> Pgasync_error.t -> unit
     val writer : t -> Writer.t
+    val runtime_parameters : t -> string String.Map.t
+    val reader : t -> Reader.t
+    val backend_key : t -> Types.backend_key option
 
     type to_flush_or_not =
       | Not_required
@@ -262,6 +265,9 @@ module Expert = struct
     [@@deriving sexp_of]
 
     let writer t : Writer.t = t.writer
+    let runtime_parameters t = String.Map.of_hashtbl_exn t.runtime_parameters
+    let reader t = t.reader
+    let backend_key t = Set_once.get t.backend_key
 
     let set_state t state =
       t.state <- state;
@@ -785,9 +791,10 @@ module Expert = struct
           (state : Sexp.t)]
   ;;
 
-  let login t ~user ~password ~gss_krb_token ~database =
+  let login t ~startup_message ~password ~gss_krb_token =
+    let user = startup_message.Protocol.Frontend.StartupMessage.user in
     catch_write_errors t ~flush_message:Not_required ~f:(fun writer ->
-      Protocol.Frontend.Writer.startup_message writer { user; database });
+      Protocol.Frontend.Writer.startup_message writer startup_message);
     read_messages t ~handle_message:(fun msg_type iobuf ->
       match msg_type with
       | AuthenticationRequest ->
@@ -1046,12 +1053,11 @@ module Expert = struct
         ?(interrupt = Deferred.never ())
         ?(ssl_mode = Ssl_mode.Disable)
         ?server
-        ?user
         ?password
         ?gss_krb_token
         ?(buffer_age_limit = `At_most (Time_float.Span.of_int_min 2))
         ?(buffer_byte_limit = Byte_units.of_megabytes 128.)
-        ~database
+        ~startup_message
         ()
     =
     let where_to_connect =
@@ -1059,56 +1065,46 @@ module Expert = struct
       | Some x -> Where_to_connect x
       | None -> force default_where_to_connect
     in
-    let%bind (user : string Or_error.t) =
-      match user with
-      | Some u -> return (Ok u)
-      | None -> default_user ()
-    in
-    match user with
-    | Error err -> return (Error (Pgasync_error.of_error err))
-    | Ok user ->
+    match%bind
+      connect_tcp_and_maybe_start_ssl
+        ~buffer_age_limit
+        ~buffer_byte_limit:(Byte_units.bytes_int_exn buffer_byte_limit)
+        ~interrupt
+        ~ssl_mode
+        where_to_connect
+    with
+    | Error error -> return (Error (Pgasync_error.of_error error))
+    | Ok (t, writer_failed) ->
+      upon writer_failed (fun exn ->
+        failed
+          t
+          (Pgasync_error.create_s [%message "Writer failed asynchronously" (exn : Exn.t)]));
+      let login_failed err =
+        failed t err;
+        return (Error err)
+      in
       (match%bind
-         connect_tcp_and_maybe_start_ssl
-           ~buffer_age_limit
-           ~buffer_byte_limit:(Byte_units.bytes_int_exn buffer_byte_limit)
-           ~interrupt
-           ~ssl_mode
-           where_to_connect
+         choose
+           [ choice interrupt (fun () -> `Interrupt)
+           ; choice (login t ~startup_message ~password ~gss_krb_token) (fun l ->
+               `Result l)
+           ]
        with
-       | Error error -> return (Error (Pgasync_error.of_error error))
-       | Ok (t, writer_failed) ->
-         upon writer_failed (fun exn ->
-           failed
-             t
-             (Pgasync_error.create_s
-                [%message "Writer failed asynchronously" (exn : Exn.t)]));
-         let login_failed err =
-           failed t err;
-           return (Error err)
-         in
-         (match%bind
-            choose
-              [ choice interrupt (fun () -> `Interrupt)
-              ; choice (login t ~user ~password ~gss_krb_token ~database) (fun l ->
-                  `Result l)
-              ]
-          with
-          | `Interrupt -> login_failed (Pgasync_error.of_string "login interrupted")
-          | `Result (Connection_closed err) -> return (Error err)
-          | `Result (Done (Error err)) -> login_failed err
-          | `Result (Done (Ok ())) -> return (Ok t)))
+       | `Interrupt -> login_failed (Pgasync_error.of_string "login interrupted")
+       | `Result (Connection_closed err) -> return (Error err)
+       | `Result (Done (Error err)) -> login_failed err
+       | `Result (Done (Ok ())) -> return (Ok t))
   ;;
 
   let login_and_get_raw
         ?interrupt
         ?ssl_mode
         ?server
-        ?user
         ?password
         ?gss_krb_token
         ?buffer_age_limit
         ?buffer_byte_limit
-        ~database
+        ~startup_message
         ()
     =
     match%bind
@@ -1116,19 +1112,18 @@ module Expert = struct
         ?interrupt
         ?ssl_mode
         ?server
-        ?user
         ?password
         ?gss_krb_token
         ?buffer_age_limit
         ?buffer_byte_limit
-        ~database
+        ~startup_message
         ()
     with
     | Error _ as result -> return result
     | Ok t ->
       (* Don't handle async messages here, we're
          passing out the raw reader and writer *)
-      Ok (t.reader, writer t) |> return
+      Ok t |> return
   ;;
 
   let connect
@@ -1143,23 +1138,39 @@ module Expert = struct
         ~database
         ()
     =
-    match%bind
-      create_and_login
-        ?interrupt
-        ?ssl_mode
-        ?server
-        ?user
-        ?password
-        ?gss_krb_token
-        ?buffer_age_limit
-        ?buffer_byte_limit
-        ~database
-        ()
-    with
-    | Error _ as result -> return result
-    | Ok t ->
-      handle_asynchronous_messages t;
-      return (Ok t)
+    let%bind (user : string Or_error.t) =
+      match user with
+      | Some u -> return (Ok u)
+      | None -> default_user ()
+    in
+    match user with
+    | Error err -> return (Error (Pgasync_error.of_error err))
+    | Ok user ->
+      let startup_message =
+        Protocol.Frontend.StartupMessage.
+          { user
+          ; database
+          ; options = []
+          ; replication = None
+          ; runtime_parameters = String.Map.empty
+          }
+      in
+      (match%bind
+         create_and_login
+           ?interrupt
+           ?ssl_mode
+           ?server
+           ?password
+           ?gss_krb_token
+           ?buffer_age_limit
+           ?buffer_byte_limit
+           ~startup_message
+           ()
+       with
+       | Error _ as result -> return result
+       | Ok t ->
+         handle_asynchronous_messages t;
+         return (Ok t))
   ;;
 
   let with_connection
@@ -1872,5 +1883,15 @@ module Private = struct
 
   let pgasync_error_of_error = Pgasync_error.of_error
   let pq_cancel = Expert.pq_cancel
-  let login_and_get_raw = Expert.login_and_get_raw
+
+  module Without_background_asynchronous_message_handling = struct
+    type nonrec t = t
+
+    let login_and_get_raw = Expert.login_and_get_raw
+    let writer = Expert.writer
+    let reader = Expert.reader
+    let backend_key = Expert.backend_key
+    let runtime_parameters = Expert.runtime_parameters
+    let pq_cancel = pq_cancel
+  end
 end
