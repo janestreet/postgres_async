@@ -11,7 +11,7 @@ let%expect_test "check that basic query functionality works" =
         "SELECT $1::int"
         ~parameters:[| Some "1234" |]
         ~handle_row:(fun ~column_names:_ ~values ->
-          print_s [%message (values : string option array)])
+        print_s [%message (values : string option array)])
     in
     Or_error.ok_exn result;
     [%expect {| (values ((1234))) |}];
@@ -34,12 +34,12 @@ let%expect_test "check that fundamental copy-in features work" =
         ~table_name:"x"
         ~column_names:[| "y"; "z" |]
         ~feed_data:(fun () ->
-          match !countdown with
-          | 0 -> Finished
-          | i ->
-            decr countdown;
-            Data
-              [| Some (Int.to_string i); Option.some_if (i % 2 = 0) (sprintf "asdf-%i" i) |])
+        match !countdown with
+        | 0 -> Finished
+        | i ->
+          decr countdown;
+          Data
+            [| Some (Int.to_string i); Option.some_if (i % 2 = 0) (sprintf "asdf-%i" i) |])
     in
     Or_error.ok_exn result;
     [%expect {||}];
@@ -48,8 +48,8 @@ let%expect_test "check that fundamental copy-in features work" =
         postgres
         "SELECT * FROM x ORDER BY y"
         ~handle_row:(fun ~column_names ~values ->
-          print_s
-            [%sexp (Array.zip_exn column_names values : (string * string option) array)])
+        print_s
+          [%sexp (Array.zip_exn column_names values : (string * string option) array)])
     in
     Or_error.ok_exn result;
     [%expect

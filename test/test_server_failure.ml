@@ -68,9 +68,9 @@ let%expect_test "terminate backend" =
       let%bind result = Postgres_async.query_expect_no_data postgres "" in
       [%test_pred: unit Or_error.t]
         (fun r ->
-           String.is_substring
-             (Sexp.to_string [%sexp (r : unit Or_error.t)])
-             ~substring:"query issued against previously-failed connection")
+          String.is_substring
+            (Sexp.to_string [%sexp (r : unit Or_error.t)])
+            ~substring:"query issued against previously-failed connection")
         result;
       return ())
   in
@@ -218,9 +218,9 @@ let%expect_test "invaild messages during login" =
 
 let%expect_test "invalid messages during query_expect_no_data" =
   let try_query
-        ?(show_second_result = false)
-        ?(send_eof_after_response = true)
-        query_response
+    ?(show_second_result = false)
+    ?(send_eof_after_response = true)
+    query_response
     =
     let handle_client reader writer =
       (* wait for the startup message. *)

@@ -74,7 +74,6 @@ module Pgasync_error = struct
      the query was started, so it's reasonable to associate it with the [query], which
      sounds fine. *)
 
-
   module Postgres_field = Protocol.Backend.Error_or_notice_field
 
   type server_error = Protocol.Backend.ErrorResponse.t =
@@ -908,12 +907,12 @@ module Expert = struct
   ;;
 
   let maybe_ssl_wrap
-        ~buffer_byte_limit
-        ~interrupt
-        ~where_to_connect
-        ~ssl_mode
-        ~tcp_reader
-        ~tcp_writer
+    ~buffer_byte_limit
+    ~interrupt
+    ~where_to_connect
+    ~ssl_mode
+    ~tcp_reader
+    ~tcp_writer
     =
     let negotiate_ssl ~required =
       match Protocol.Frontend.Writer.ssl_request tcp_writer () with
@@ -1016,11 +1015,11 @@ module Expert = struct
   ;;
 
   let connect_tcp_and_maybe_start_ssl
-        ~buffer_age_limit
-        ~buffer_byte_limit
-        ~interrupt
-        ~ssl_mode
-        where_to_connect
+    ~buffer_age_limit
+    ~buffer_byte_limit
+    ~interrupt
+    ~ssl_mode
+    where_to_connect
     =
     let (Where_to_connect server) = where_to_connect in
     match%bind
@@ -1050,15 +1049,15 @@ module Expert = struct
   ;;
 
   let create_and_login
-        ?(interrupt = Deferred.never ())
-        ?(ssl_mode = Ssl_mode.Disable)
-        ?server
-        ?password
-        ?gss_krb_token
-        ?(buffer_age_limit = `At_most (Time_float.Span.of_int_min 2))
-        ?(buffer_byte_limit = Byte_units.of_megabytes 128.)
-        ~startup_message
-        ()
+    ?(interrupt = Deferred.never ())
+    ?(ssl_mode = Ssl_mode.Disable)
+    ?server
+    ?password
+    ?gss_krb_token
+    ?(buffer_age_limit = `At_most (Time_float.Span.of_int_min 2))
+    ?(buffer_byte_limit = Byte_units.of_megabytes 128.)
+    ~startup_message
+    ()
     =
     let where_to_connect =
       match server with
@@ -1097,15 +1096,15 @@ module Expert = struct
   ;;
 
   let login_and_get_raw
-        ?interrupt
-        ?ssl_mode
-        ?server
-        ?password
-        ?gss_krb_token
-        ?buffer_age_limit
-        ?buffer_byte_limit
-        ~startup_message
-        ()
+    ?interrupt
+    ?ssl_mode
+    ?server
+    ?password
+    ?gss_krb_token
+    ?buffer_age_limit
+    ?buffer_byte_limit
+    ~startup_message
+    ()
     =
     match%bind
       create_and_login
@@ -1127,16 +1126,16 @@ module Expert = struct
   ;;
 
   let connect
-        ?interrupt
-        ?ssl_mode
-        ?server
-        ?user
-        ?password
-        ?gss_krb_token
-        ?buffer_age_limit
-        ?buffer_byte_limit
-        ~database
-        ()
+    ?interrupt
+    ?ssl_mode
+    ?server
+    ?user
+    ?password
+    ?gss_krb_token
+    ?buffer_age_limit
+    ?buffer_byte_limit
+    ~database
+    ()
     =
     let%bind (user : string Or_error.t) =
       match user with
@@ -1174,18 +1173,18 @@ module Expert = struct
   ;;
 
   let with_connection
-        ?interrupt
-        ?ssl_mode
-        ?server
-        ?user
-        ?password
-        ?gss_krb_token
-        ?buffer_age_limit
-        ?buffer_byte_limit
-        ?try_cancel_statement_before_close
-        ~database
-        ~on_handler_exception:`Raise
-        func
+    ?interrupt
+    ?ssl_mode
+    ?server
+    ?user
+    ?password
+    ?gss_krb_token
+    ?buffer_age_limit
+    ?buffer_byte_limit
+    ?try_cancel_statement_before_close
+    ~database
+    ~on_handler_exception:`Raise
+    func
     =
     match%bind
       connect
@@ -1507,12 +1506,12 @@ module Expert = struct
   ;;
 
   let internal_query
-        t
-        ?(parameters = [||])
-        ?pushback
-        ~handle_columns
-        query_string
-        ~handle_row
+    t
+    ?(parameters = [||])
+    ?pushback
+    ~handle_columns
+    query_string
+    ~handle_row
     =
     let%bind result =
       match%bind parse_and_start_executing_query t query_string ~parameters with
@@ -1769,16 +1768,16 @@ end
 type t = Expert.t [@@deriving sexp_of]
 
 let connect
-      ?interrupt
-      ?ssl_mode
-      ?server
-      ?user
-      ?password
-      ?gss_krb_token
-      ?buffer_age_limit
-      ?buffer_byte_limit
-      ~database
-      ()
+  ?interrupt
+  ?ssl_mode
+  ?server
+  ?user
+  ?password
+  ?gss_krb_token
+  ?buffer_age_limit
+  ?buffer_byte_limit
+  ~database
+  ()
   =
   Expert.connect
     ?interrupt
@@ -1820,18 +1819,18 @@ let status t =
 ;;
 
 let with_connection
-      ?interrupt
-      ?ssl_mode
-      ?server
-      ?user
-      ?password
-      ?gss_krb_token
-      ?buffer_age_limit
-      ?buffer_byte_limit
-      ?try_cancel_statement_before_close
-      ~database
-      ~on_handler_exception:`Raise
-      func
+  ?interrupt
+  ?ssl_mode
+  ?server
+  ?user
+  ?password
+  ?gss_krb_token
+  ?buffer_age_limit
+  ?buffer_byte_limit
+  ?try_cancel_statement_before_close
+  ~database
+  ~on_handler_exception:`Raise
+  func
   =
   Expert.with_connection
     ?interrupt

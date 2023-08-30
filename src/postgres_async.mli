@@ -100,10 +100,10 @@ type t [@@deriving sexp_of]
 
 include
   Postgres_async_intf.S
-  with type t := t
-   and type error := Error.t
-   and type column_metadata := Column_metadata.t
-   and type ssl_mode := Ssl_mode.t
+    with type t := t
+     and type error := Error.t
+     and type column_metadata := Column_metadata.t
+     and type ssl_mode := Ssl_mode.t
 
 (** The [Expert] module provides versions of all the same functions that instead return
     [Or_pgasync_error.t]s.
@@ -112,10 +112,10 @@ include
     whether you want to try and inspect the error code of a specific failure or not. *)
 module Expert :
   Postgres_async_intf.S
-  with type t := t
-   and type error := Pgasync_error.t
-   and type column_metadata := Column_metadata.t
-   and type ssl_mode := Ssl_mode.t
+    with type t := t
+     and type error := Pgasync_error.t
+     and type column_metadata := Column_metadata.t
+     and type ssl_mode := Ssl_mode.t
 
 module Private : sig
   module Protocol = Protocol

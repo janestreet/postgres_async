@@ -13,12 +13,12 @@ let with_connection_exn =
 ;;
 
 let query_exn
-      postgres
-      ?handle_columns
-      ?(show_column_names = false)
-      ?parameters
-      ?pushback
-      str
+  postgres
+  ?handle_columns
+  ?(show_column_names = false)
+  ?parameters
+  ?pushback
+  str
   =
   let handle_row ~column_names ~values =
     match show_column_names with
@@ -136,7 +136,7 @@ let%expect_test "failures are reported gracefully and don't kill the connection"
           postgres
           str
           ~handle_row:(fun ~column_names:_ ~values ->
-            print_s [%message "row" ~_:(values : string option array)])
+          print_s [%message "row" ~_:(values : string option array)])
       with
       | Ok () ->
         print_s [%message "OK"];

@@ -9,10 +9,10 @@ let elide_timezone params =
 ;;
 
 let startup_message
-      ?replication
-      ?(options = [])
-      ?(runtime_parameters = String.Map.empty)
-      ()
+  ?replication
+  ?(options = [])
+  ?(runtime_parameters = String.Map.empty)
+  ()
   =
   Postgres_async.Private.Protocol.Frontend.StartupMessage.
     { user = "postgres"; database = "postgres"; options; runtime_parameters; replication }

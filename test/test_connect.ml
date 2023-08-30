@@ -11,9 +11,9 @@ let with_dummy_server func =
       ~on_handler_error:`Raise
       Tcp.Where_to_listen.of_port_chosen_by_os
       (fun _ reader _ ->
-         let%bind _ = Reader.peek reader ~len:1 in
-         Ivar.fill_exn got_connection ();
-         Reader.drain reader)
+      let%bind _ = Reader.peek reader ~len:1 in
+      Ivar.fill_exn got_connection ();
+      Reader.drain reader)
   in
   let got_connection = Ivar.read got_connection in
   let addr =
@@ -115,9 +115,9 @@ let try_login ?(user = "postgres") ?password ?(database = "postgres") harness =
         postgres
         "SELECT CURRENT_USER, current_database()"
         ~handle_row:(fun ~column_names:_ ~values ->
-          match values with
-          | [| Some u; Some d |] -> Set_once.set_exn u_d [%here] (u, d)
-          | _ -> failwith "bad query response")
+        match values with
+        | [| Some u; Some d |] -> Set_once.set_exn u_d [%here] (u, d)
+        | _ -> failwith "bad query response")
     in
     Or_error.ok_exn result;
     return (Set_once.get_exn u_d [%here])

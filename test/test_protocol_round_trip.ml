@@ -42,7 +42,7 @@ let test_startup ?replication ?(options = []) ?(runtime_parameters = String.Map.
   in
   let read_payload ~payload_length:_ iobuf =
     let ({ user; database; options; runtime_parameters; replication }
-         : Protocol.Frontend.StartupMessage.t)
+          : Protocol.Frontend.StartupMessage.t)
       =
       Protocol.Frontend.StartupMessage.consume iobuf |> Or_error.ok_exn
     in

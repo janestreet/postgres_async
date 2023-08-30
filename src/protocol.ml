@@ -198,9 +198,9 @@ module Frontend = struct
     let escape_option_space option =
       String.to_list option
       |> List.concat_map ~f:(fun char ->
-        match char with
-        | ' ' | '\\' -> [ '\\'; char ]
-        | (_ : Char.t) -> [ char ])
+           match char with
+           | ' ' | '\\' -> [ '\\'; char ]
+           | (_ : Char.t) -> [ char ])
       |> String.of_char_list
     ;;
 
@@ -219,19 +219,19 @@ module Frontend = struct
       + String.length database
       + 1
       + (match replication with
-        | Some replication -> 11 + 1 + String.length replication + 1
-        | None -> 0)
+         | Some replication -> 11 + 1 + String.length replication + 1
+         | None -> 0)
       + (match List.is_empty options with
-        | true -> 0
-        | false ->
-          7
-          + 1
-          + List.sum
-              (module Int)
-              options
-              ~f:(fun value ->
-                let escaped_value = escape_option_space value in
-                1 + String.length escaped_value))
+         | true -> 0
+         | false ->
+           7
+           + 1
+           + List.sum
+               (module Int)
+               options
+               ~f:(fun value ->
+                 let escaped_value = escape_option_space value in
+                 1 + String.length escaped_value))
       (* end of list: *)
       + List.sum
           (module Int)
@@ -814,8 +814,8 @@ module Backend = struct
       + String.length error_code
       + 1
       + List.fold all_fields ~init:0 ~f:(fun acc ((_ : Error_or_notice_field.t), data) ->
-        (* 1 for code, 1 for null term *)
-        1 + String.length data + 1 + acc)
+          (* 1 for code, 1 for null term *)
+          1 + String.length data + 1 + acc)
       (* zero terminates *)
       + 1
     ;;
@@ -1124,8 +1124,8 @@ module Backend = struct
   end
 
   module CopyResponse (A : sig
-      val name : string
-    end) : CopyResponse = struct
+    val name : string
+  end) : CopyResponse = struct
     type column =
       { name : string
       ; format : [ `Text | `Binary ]
@@ -1165,12 +1165,12 @@ module Backend = struct
   end
 
   module CopyInResponse = CopyResponse (struct
-      let name = "CopyInResponse"
-    end)
+    let name = "CopyInResponse"
+  end)
 
   module CopyOutResponse = CopyResponse (struct
-      let name = "CopyOutResponse"
-    end)
+    let name = "CopyOutResponse"
+  end)
 
   module CopyData = struct
     (* After [focus_on_message] seeks over the type and length, 'CopyData'
