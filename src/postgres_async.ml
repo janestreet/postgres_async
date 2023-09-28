@@ -194,7 +194,8 @@ module Expert = struct
       { writer : Writer.t opaque
       ; reader : Reader.t
       ; mutable state : state
-      ; state_changed : (unit, read_write) Bvar.t opaque
+      ; close_finished_expert : unit Or_pgasync_error.t Ivar.t
+      ; close_finished : unit Or_error.t Deferred.t
       ; sequencer : Query_sequencer.t
       ; runtime_parameters : string String.Table.t
       ; notification_buses :
@@ -252,7 +253,8 @@ module Expert = struct
       { writer : (Writer.t[@sexp.opaque])
       ; reader : (Reader.t[@sexp.opaque])
       ; mutable state : state
-      ; state_changed : (unit, read_write) Bvar.t
+      ; close_finished_expert : unit Or_pgasync_error.t Ivar.t
+      ; close_finished : unit Or_error.t Deferred.t
       ; sequencer : Query_sequencer.t
       ; runtime_parameters : string String.Table.t
       ; notification_buses :
@@ -270,7 +272,11 @@ module Expert = struct
 
     let set_state t state =
       t.state <- state;
-      Bvar.broadcast t.state_changed ()
+      match state with
+      | Failed { error; resources_released = true } ->
+        Ivar.fill_if_empty t.close_finished_expert (Error error)
+      | Closed_gracefully -> Ivar.fill_if_empty t.close_finished_expert (Ok ())
+      | Closing | Open | Failed { resources_released = false; _ } -> ()
     ;;
 
     let cleanup_resources t =
@@ -293,10 +299,12 @@ module Expert = struct
     ;;
 
     let create_internal ~buffer_byte_limit ~where_to_connect reader writer =
+      let close_finished_expert = Ivar.create () in
       { reader
       ; writer
       ; state = Open
-      ; state_changed = Bvar.create ()
+      ; close_finished_expert
+      ; close_finished = Ivar.read close_finished_expert >>| Or_pgasync_error.to_or_error
       ; sequencer = Query_sequencer.create ()
       ; runtime_parameters = String.Table.create ()
       ; notification_buses = Notification_channel.Table.create ~size:1 ()
@@ -395,15 +403,7 @@ module Expert = struct
     ;;
 
     let status t = t.state
-
-    let rec close_finished t =
-      match t.state with
-      | Failed { error; resources_released = true } -> return (Error error)
-      | Closed_gracefully -> return (Ok ())
-      | Closing | Open | Failed { resources_released = false; _ } ->
-        let%bind () = Bvar.wait t.state_changed in
-        close_finished t
-    ;;
+    let close_finished t = Ivar.read t.close_finished_expert
 
     let close ?(try_cancel_statement_before_close = false) t =
       don't_wait_for
@@ -1797,7 +1797,7 @@ let close ?try_cancel_statement_before_close t =
   Expert.close ?try_cancel_statement_before_close t >>| Or_pgasync_error.to_or_error
 ;;
 
-let close_finished t = Expert.close_finished t >>| Or_pgasync_error.to_or_error
+let close_finished t = (t : Expert.t).close_finished
 
 type state =
   | Open
