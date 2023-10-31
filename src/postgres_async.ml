@@ -1434,10 +1434,10 @@ module Expert = struct
         (match !seen_copy_done with
          | true -> protocol_error_s [%sexp "CopyData message after CopyDone?"]
          | false ->
-           Protocol.Backend.CopyData.skip iobuf;
+           Protocol.Shared.CopyData.skip iobuf;
            Continue)
       | CopyDone ->
-        Protocol.Backend.CopyDone.consume iobuf;
+        Protocol.Shared.CopyDone.consume iobuf;
         seen_copy_done := true;
         Continue
       | CommandComplete ->
@@ -1580,6 +1580,195 @@ module Expert = struct
     let%bind result =
       Query_sequencer.enqueue t.sequencer (fun () ->
         internal_query t ?parameters ?pushback ~handle_columns query_string ~handle_row)
+    in
+    match !callback_raised with
+    | true -> Deferred.never ()
+    | false -> return result
+  ;;
+
+  (* Type to hold execution status of chain of simple query commands *)
+  module Simple_query_status = struct
+    type state =
+      | Success
+      | Unsupported_message_type of Pgasync_error.t
+      | Remote_reported_error of Pgasync_error.t
+
+    type t =
+      { result : state
+      ; warnings : Error.t list
+      }
+    [@@deriving fields ~getters ~iterators:create]
+
+    let update_result t result = { t with result }
+    let add_warning t warning = { t with warnings = warning :: t.warnings }
+  end
+
+  module Simple_query_result = struct
+    type t =
+      | Completed_with_no_warnings
+      | Completed_with_warnings of Error.t list
+      | Failed of Pgasync_error.t
+      | Connection_error of Pgasync_error.t
+      | Driver_error of Pgasync_error.t
+
+    let to_or_pgasync_error = function
+      | Completed_with_no_warnings | Completed_with_warnings (_ : Error.t list) -> Ok ()
+      | Failed error | Connection_error error | Driver_error error -> Result.fail error
+    ;;
+  end
+
+  (* Runs through the state-machine for the messages returned from the server
+     as a result of a simple query. Returns whether the query was successfully
+     executed or, if not, an appropriate error message. *)
+  let handle_simple_query_messages t ~handle_columns ~handle_row =
+    let current_row_description = ref None in
+    let status = ref (Simple_query_status.Fields.create ~result:Success ~warnings:[]) in
+    read_messages t ~handle_message:(fun msg_type iobuf ->
+      match (msg_type : Protocol.Backend.constructor) with
+      | CommandComplete ->
+        (* A RowDescription can be followed by multiple DataRows, and then
+           a CommandComplete. Only reset [current_row_description] when we know
+           all DataRows have been received. *)
+        current_row_description := None;
+        (match Protocol.Backend.CommandComplete.consume iobuf with
+         | Error err -> protocol_error_of_error err
+         | Ok (_ : string) -> Continue)
+      | ReadyForQuery ->
+        (match Protocol.Backend.ReadyForQuery.consume iobuf with
+         | Error err -> protocol_error_of_error err
+         | Ok (_ : Protocol.Backend.ReadyForQuery.t) -> Stop !status)
+      | RowDescription ->
+        (match Protocol.Backend.RowDescription.consume iobuf with
+         | Error err -> protocol_error_of_error err
+         | Ok (row_description : Protocol.Backend.RowDescription.t) ->
+           handle_columns row_description;
+           current_row_description := Some row_description;
+           Continue)
+      | DataRow ->
+        (match !current_row_description, Protocol.Backend.DataRow.consume iobuf with
+         | None, (_ : Protocol.Backend.DataRow.t Or_error.t) ->
+           protocol_error_s [%message "Non-existent Row Description for Data Row."]
+         | Some (_ : Protocol.Backend.RowDescription.t), Error err ->
+           protocol_error_of_error err
+         | Some row_description, Ok values ->
+           let column_names = Array.map row_description ~f:Column_metadata.name in
+           (match Array.length column_names <> Array.length values with
+            | true ->
+              protocol_error_s
+                [%message
+                  "number of columns in DataRow message did not match RowDescription"
+                    (column_names : string array)
+                    (values : string option array)]
+            | false ->
+              handle_row ~column_names ~values;
+              Continue))
+      | EmptyQueryResponse ->
+        Protocol.Backend.EmptyQueryResponse.consume iobuf;
+        Continue
+      | ErrorResponse ->
+        (match Protocol.Backend.ErrorResponse.consume iobuf with
+         | Error err -> protocol_error_of_error err
+         | Ok error_response ->
+           let tag = "Postgres Server Error" in
+           let error_response =
+             Pgasync_error.of_error_response error_response |> Pgasync_error.tag ~tag
+           in
+           (* When ErrorResponse is sent, it is immediately followed by a
+              ReadyForQuery since the rest of the query is terminated. Save
+              this code and then return it in the future.*)
+           status
+             := Simple_query_status.update_result
+                  !status
+                  (Remote_reported_error error_response);
+           Continue)
+      | CopyInResponse ->
+        (match Protocol.Backend.CopyInResponse.consume iobuf with
+         | Error err -> protocol_error_of_error err
+         | Ok (_ : Protocol.Backend.CopyInResponse.t) ->
+           let reason =
+             "Command ignored: COPY FROM STDIN is not appropriate for \
+              [Postgres_async.simple_query]"
+           in
+           (* Abort COPY IN command on the server side. An ErrorResponse
+              will be returned by the server following this which will
+              terminate the query. *)
+           catch_write_errors t ~flush_message:Not_required ~f:(fun writer ->
+             Protocol.Frontend.Writer.copy_fail writer { reason });
+           let warning = Error.create_s [%message reason] in
+           status := Simple_query_status.add_warning !status warning;
+           Continue)
+      | CopyOutResponse ->
+        (match Protocol.Backend.CopyOutResponse.consume iobuf with
+         | Error err -> protocol_error_of_error err
+         | Ok (_ : Protocol.Backend.CopyOutResponse.t) ->
+           (* Store the error messsage and read remaining messages for
+              COPY OUT *)
+           let warning =
+             Error.create_s
+               [%message
+                 "Command ignored: COPY TO STDOUT is not appropriate for \
+                  [Postgres_async.simple_query]"]
+           in
+           status := Simple_query_status.add_warning !status warning;
+           Continue)
+      | CopyData ->
+        Protocol.Shared.CopyData.skip iobuf;
+        Continue
+      | CopyDone ->
+        Protocol.Shared.CopyDone.consume iobuf;
+        Continue
+      (* Note that NoticeResponse is handled directly in [read_messages] so we do not need
+         a match statement for it in this function. *)
+      | message_type ->
+        let new_result =
+          Simple_query_status.Unsupported_message_type
+            (Pgasync_error.create_s
+               [%message
+                 "Invalid message type for Postgres Simple Query protocol"
+                   (message_type : Protocol.Backend.constructor)])
+        in
+        status := Simple_query_status.update_result !status new_result;
+        Stop !status)
+  ;;
+
+  let simple_query ?handle_columns t query_string ~handle_row =
+    let callback_raised = ref false in
+    let wrap_callback ~f =
+      match !callback_raised with
+      | true -> ()
+      | false ->
+        (match f () with
+         | () -> ()
+         | exception exn ->
+           (* it's important that we drain (and discard) the remaining rows. *)
+           Monitor.send_exn (Monitor.current ()) exn;
+           callback_raised := true)
+    in
+    let handle_row ~column_names ~values =
+      wrap_callback ~f:(fun () -> handle_row ~column_names ~values)
+    in
+    let handle_columns description =
+      match handle_columns with
+      | None -> ()
+      | Some handler -> wrap_callback ~f:(fun () -> handler description)
+    in
+    let%bind result =
+      Query_sequencer.enqueue t.sequencer (fun () ->
+        catch_write_errors t ~flush_message:Write_afterwards ~f:(fun writer ->
+          Protocol.Frontend.Writer.query writer query_string);
+        let%map return_status =
+          handle_simple_query_messages t ~handle_columns ~handle_row
+        in
+        match return_status with
+        | Connection_closed error -> Simple_query_result.Connection_error error
+        | Done return_status ->
+          (match Simple_query_status.result return_status with
+           | Unsupported_message_type error -> Simple_query_result.Driver_error error
+           | Remote_reported_error error -> Simple_query_result.Failed error
+           | Success ->
+             (match Simple_query_status.warnings return_status with
+              | [] -> Simple_query_result.Completed_with_no_warnings
+              | warnings -> Simple_query_result.Completed_with_warnings warnings)))
     in
     match !callback_raised with
     | true -> Deferred.never ()
@@ -1879,9 +2068,14 @@ let query t ?parameters ?pushback ?handle_columns query_string ~handle_row =
 
 module Private = struct
   module Protocol = Protocol
+  module Types = Types
 
   let pgasync_error_of_error = Pgasync_error.of_error
   let pq_cancel = Expert.pq_cancel
+
+  module Simple_query_result = Expert.Simple_query_result
+
+  let simple_query = Expert.simple_query
 
   module Without_background_asynchronous_message_handling = struct
     type nonrec t = t

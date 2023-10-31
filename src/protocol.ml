@@ -152,6 +152,35 @@ module Shared = struct
         ~length:full_length
         ~blit_to_bigstring)
   ;;
+
+  module No_arg = struct
+    let gen ~constructor =
+      let tmp = Iobuf.create ~len:5 in
+      Iobuf.Poke.char tmp ~pos:0 constructor;
+      (* fine to use Iobuf's int32 function, as [4] is clearly in range. *)
+      Iobuf.Poke.int32_be_trunc tmp ~pos:1 4;
+      Iobuf.to_string tmp
+    ;;
+  end
+
+  (* Both the backend and frontend use the same format for [CopyData] and
+     [CopyDone] messages, hence they are placed in [Shared]. *)
+  module CopyData = struct
+    let message_type_char = Some 'd'
+
+    type t = string
+
+    (* After [focus_on_message] seeks over the type and length, 'CopyData'
+       messages are simply just the payload bytes. *)
+    let skip iobuf = Iobuf.advance iobuf (Iobuf.length iobuf)
+    let validate_exn (_ : t) = ()
+    let payload_length t = String.length t
+    let fill t iobuf = Iobuf.Fill.stringo iobuf t
+  end
+
+  module CopyDone = struct
+    let consume (_ : _ Iobuf.t) = ()
+  end
 end
 
 module Frontend = struct
@@ -483,7 +512,7 @@ module Frontend = struct
       | Statement of Types.Statement_name.t
       | Portal of Types.Portal_name.t
 
-    let validate_exn (_t : t) = ()
+    let validate_exn (_ : t) = ()
 
     let payload_length t =
       let str =
@@ -527,14 +556,21 @@ module Frontend = struct
     let fill t iobuf = Shared.fill_null_terminated iobuf t.reason
   end
 
-  module CopyData = struct
-    let message_type_char = Some 'd'
-
+  module Query = struct
     type t = string
 
+    let message_type_char = Some 'Q'
+    let consume_exn = Shared.consume_cstring_exn
+
+    let consume iobuf =
+      match consume_exn iobuf with
+      | exception exn -> error_s [%message "Failed to parse Query" (exn : Exn.t)]
+      | t -> Ok t
+    ;;
+
     let validate_exn (_ : t) = ()
-    let payload_length t = String.length t
-    let fill t iobuf = Iobuf.Fill.stringo iobuf t
+    let payload_length t = 1 + String.length t
+    let fill t iobuf = Shared.fill_null_terminated iobuf t
   end
 
   module CancelRequest = struct
@@ -581,13 +617,7 @@ module Frontend = struct
     val copy_done : string
     val terminate : string
   end = struct
-    let gen ~constructor =
-      let tmp = Iobuf.create ~len:5 in
-      Iobuf.Poke.char tmp ~pos:0 constructor;
-      (* fine to use Iobuf's int32 function, as [4] is clearly in range. *)
-      Iobuf.Poke.int32_be_trunc tmp ~pos:1 4;
-      Iobuf.to_string tmp
-    ;;
+    include Shared.No_arg
 
     let flush = gen ~constructor:'H'
     let sync = gen ~constructor:'S'
@@ -607,10 +637,11 @@ module Frontend = struct
     let parse = Staged.unstage (write_message (module Parse))
     let bind = Staged.unstage (write_message (module Bind))
     let close = Staged.unstage (write_message (module Close))
+    let query = Staged.unstage (write_message (module Query))
     let describe = Staged.unstage (write_message (module Describe))
     let execute = Staged.unstage (write_message (module Execute))
     let copy_fail = Staged.unstage (write_message (module CopyFail))
-    let copy_data = Staged.unstage (write_message (module CopyData))
+    let copy_data = Staged.unstage (write_message (module Shared.CopyData))
     let cancel_request = Staged.unstage (write_message (module CancelRequest))
     let flush writer = Writer.write writer No_arg.flush
     let sync writer = Writer.write writer No_arg.sync
@@ -795,6 +826,17 @@ module Backend = struct
       in
       loop ~iobuf ~fields_rev:[]
     ;;
+
+    let payload_length { error_code; all_fields } =
+      1
+      + String.length error_code
+      + 1
+      + List.fold all_fields ~init:0 ~f:(fun acc ((_ : Error_or_notice_field.t), data) ->
+          (* 1 for code, 1 for null term *)
+          1 + String.length data + 1 + acc)
+      (* zero terminates *)
+      + 1
+    ;;
   end
 
   module ErrorResponse = struct
@@ -807,18 +849,7 @@ module Backend = struct
     ;;
 
     let message_type_char = Some 'E'
-    let validate_exn _t = ()
-
-    let payload_length { error_code; all_fields } =
-      1
-      + String.length error_code
-      + 1
-      + List.fold all_fields ~init:0 ~f:(fun acc ((_ : Error_or_notice_field.t), data) ->
-          (* 1 for code, 1 for null term *)
-          1 + String.length data + 1 + acc)
-      (* zero terminates *)
-      + 1
-    ;;
+    let validate_exn (_ : t) = ()
 
     let fill { error_code; all_fields } iobuf =
       Iobuf.Fill.char iobuf (Error_or_notice_field.to_protocol Code);
@@ -833,10 +864,22 @@ module Backend = struct
   module NoticeResponse = struct
     include Error_or_Notice
 
+    let message_type_char = Some 'N'
+    let validate_exn (_ : t) = ()
+
     let consume iobuf =
       match Error_or_Notice.consume_exn iobuf with
       | exception exn -> error_s [%message "Failed to parse NoticeResponse" (exn : Exn.t)]
       | t -> Ok t
+    ;;
+
+    let fill { error_code; all_fields } iobuf =
+      Iobuf.Fill.char iobuf (Error_or_notice_field.to_protocol Code);
+      Shared.fill_null_terminated iobuf error_code;
+      List.iter all_fields ~f:(fun (field, data) ->
+        Iobuf.Fill.char iobuf (Error_or_notice_field.to_protocol field);
+        Shared.fill_null_terminated iobuf data);
+      Iobuf.Fill.char iobuf '\x00'
     ;;
   end
 
@@ -878,7 +921,7 @@ module Backend = struct
     ;;
 
     let message_type_char = Some 'R'
-    let validate_exn _t = ()
+    let validate_exn (_ : t) = ()
 
     let payload_length t =
       let var_length =
@@ -910,11 +953,41 @@ module Backend = struct
     ;;
   end
 
+  module ParameterDescription = struct
+    type t = int array
+
+    let message_type_char = Some 't'
+
+    let consume_exn iobuf =
+      let num_parameters = Iobuf.Consume.int16_be iobuf in
+      Array.init_ascending num_parameters ~f:(fun () -> Iobuf.Consume.int32_be iobuf)
+    ;;
+
+    let consume iobuf =
+      match consume_exn iobuf with
+      | exception exn ->
+        error_s [%message "Failed to parse ParameterDescription" (exn : Exn.t)]
+      | t -> Ok t
+    ;;
+
+    let validate_exn (_ : t) = ()
+
+    let payload_length t =
+      (* Number of parameters *) 2 (* Size of each parameter *) + (4 * Array.length t)
+    ;;
+
+    let fill t iobuf =
+      Shared.fill_int16_be iobuf (Array.length t);
+      Array.iter t ~f:(fun i -> Shared.fill_int32_be iobuf i)
+    ;;
+  end
+
   module ParameterStatus = struct
     type t =
       { key : string
       ; data : string
       }
+    [@@deriving sexp_of]
 
     let consume_exn iobuf =
       let key = Shared.consume_cstring_exn iobuf in
@@ -930,7 +1003,7 @@ module Backend = struct
     ;;
 
     let message_type_char = Some 'S'
-    let validate_exn _t = ()
+    let validate_exn (_ : t) = ()
     let payload_length { key; data } = String.length key + 1 + String.length data + 1
 
     let fill { key; data } iobuf =
@@ -955,7 +1028,7 @@ module Backend = struct
     ;;
 
     let message_type_char = Some 'K'
-    let validate_exn _t = ()
+    let validate_exn (_ : t) = ()
     let payload_length _t = 8
 
     let fill ({ pid; secret } : Types.backend_key) iobuf =
@@ -970,6 +1043,10 @@ module Backend = struct
       ; channel : Types.Notification_channel.t
       ; payload : string
       }
+    [@@deriving sexp_of]
+
+    let message_type_char = Some 'A'
+    let validate_exn (_ : t) = ()
 
     let consume_exn iobuf =
       let pid = Pid.of_int (Iobuf.Consume.int32_be iobuf) in
@@ -985,6 +1062,23 @@ module Backend = struct
       | exception exn ->
         error_s [%message "Failed to parse NotificationResponse" (exn : Exn.t)]
       | t -> Ok t
+    ;;
+
+    let payload_length { channel; payload; _ } =
+      (* PID length *)
+      4
+      (* Channel name and null terminator *)
+      + (Types.Notification_channel.to_string channel |> String.length)
+      + 1
+      (* Payload string and null terminator *)
+      + String.length payload
+      + 1
+    ;;
+
+    let fill t iobuf =
+      Shared.fill_int32_be iobuf (Pid.to_int t.pid);
+      Shared.fill_null_terminated iobuf (Types.Notification_channel.to_string t.channel);
+      Shared.fill_null_terminated iobuf t.payload
     ;;
   end
 
@@ -1012,7 +1106,7 @@ module Backend = struct
     ;;
 
     let message_type_char = Some 'Z'
-    let validate_exn _t = ()
+    let validate_exn (_ : t) = ()
     let payload_length _t = 1
 
     let fill t iobuf =
@@ -1039,10 +1133,6 @@ module Backend = struct
   end
 
   module EmptyQueryResponse = struct
-    let consume (_ : _ Iobuf.t) = ()
-  end
-
-  module CopyDone = struct
     let consume (_ : _ Iobuf.t) = ()
   end
 
@@ -1106,6 +1196,33 @@ module Backend = struct
     ;;
 
     let skip iobuf = Iobuf.advance iobuf (Iobuf.length iobuf)
+    let message_type_char = Some 'D'
+    let validate_exn (_ : t) = ()
+
+    let payload_length t =
+      let element_length elem =
+        (* Column value length *)
+        4
+        +
+        match elem with
+        | None -> 0
+        | Some string -> String.length string
+      in
+      (* Row size *)
+      2 + Array.sum (module Int) t ~f:element_length
+    ;;
+
+    let fill t iobuf =
+      let num_parameters = Array.length t in
+      Shared.fill_int16_be iobuf num_parameters;
+      for idx = 0 to num_parameters - 1 do
+        match t.(idx) with
+        | None -> Shared.fill_int32_be iobuf (-1)
+        | Some str ->
+          Shared.fill_int32_be iobuf (String.length str);
+          Iobuf.Fill.stringo iobuf str
+      done
+    ;;
   end
 
   module type CopyResponse = sig
@@ -1172,12 +1289,6 @@ module Backend = struct
     let name = "CopyOutResponse"
   end)
 
-  module CopyData = struct
-    (* After [focus_on_message] seeks over the type and length, 'CopyData'
-       messages are simply just the payload bytes. *)
-    let skip iobuf = Iobuf.advance iobuf (Iobuf.length iobuf)
-  end
-
   module CommandComplete = struct
     type t = string
 
@@ -1189,6 +1300,29 @@ module Backend = struct
         error_s [%message "Failed to parse CommandComplete" (exn : Exn.t)]
       | t -> Ok t
     ;;
+
+    let message_type_char = Some 'C'
+    let validate_exn (_ : t) = ()
+    let payload_length t = String.length t + 1
+    let fill string iobuf = Shared.fill_null_terminated iobuf string
+  end
+
+  module No_arg : sig
+    val bind_complete : string
+    val close_complete : string
+    val copy_done : string
+    val empty_query_response : string
+    val no_data : string
+    val parse_complete : string
+  end = struct
+    include Shared.No_arg
+
+    let bind_complete = gen ~constructor:'2'
+    let close_complete = gen ~constructor:'3'
+    let copy_done = gen ~constructor:'c'
+    let empty_query_response = gen ~constructor:'I'
+    let no_data = gen ~constructor:'n'
+    let parse_complete = gen ~constructor:'1'
   end
 
   module Writer = struct
@@ -1199,6 +1333,26 @@ module Backend = struct
     let ready_for_query = Staged.unstage (write_message (module ReadyForQuery))
     let error_response = Staged.unstage (write_message (module ErrorResponse))
     let backend_key = Staged.unstage (write_message (module BackendKeyData))
+
+    let parameter_description =
+      Staged.unstage (write_message (module ParameterDescription))
+    ;;
+
     let parameter_status = Staged.unstage (write_message (module ParameterStatus))
+    let command_complete = Staged.unstage (write_message (module CommandComplete))
+    let data_row = Staged.unstage (write_message (module DataRow))
+    let notice_response = Staged.unstage (write_message (module NoticeResponse))
+    let copy_data = Staged.unstage (write_message (module Shared.CopyData))
+
+    let notification_response =
+      Staged.unstage (write_message (module NotificationResponse))
+    ;;
+
+    let copy_done writer = Writer.write writer No_arg.copy_done
+    let bind_complete writer = Writer.write writer No_arg.bind_complete
+    let close_complete writer = Writer.write writer No_arg.close_complete
+    let empty_query_response writer = Writer.write writer No_arg.empty_query_response
+    let no_data writer = Writer.write writer No_arg.no_data
+    let parse_complete writer = Writer.write writer No_arg.parse_complete
   end
 end

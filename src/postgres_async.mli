@@ -119,9 +119,59 @@ module Expert :
 
 module Private : sig
   module Protocol = Protocol
+  module Types = Types
 
   val pgasync_error_of_error : Error.t -> Pgasync_error.t
   val pq_cancel : t -> unit Or_error.t Deferred.t
+
+  module Simple_query_result : sig
+    (**
+       - Completed_with_no_warnings : everything worked as expected
+       - Completed_with_warnings : the query ran successfully, but the query tried to do
+         something unsupported client-side (e.g. COPY TO STDOUT).
+       - Connection_error : The underlying connection died at some point during query
+         execution or parsing results. Query may or may not have taken effect on server.
+       - Driver_error : Postgres_async received an unexpected protocol message from the
+         server. Query may or may not have taken effect on server.
+       - Failed : Got error from server, query did not take effect on server
+    *)
+
+    type t =
+      | Completed_with_no_warnings
+      | Completed_with_warnings of Error.t list
+      | Failed of Pgasync_error.t
+      | Connection_error of Pgasync_error.t
+      | Driver_error of Pgasync_error.t
+
+    val to_or_pgasync_error : t -> unit Or_pgasync_error.t
+  end
+
+  (** Executes a query according to the Postgres Simple Query protocol.  As specified in
+      the protocol, multiple commands can be chained together using semi-colons and
+      executed. If not already in a transaction, the query is treated as a transaction and
+      all commands within it are executed atomically.
+
+      [handle_columns] is called on each column row description message. Note that
+      with simple_query, it's possible that multiple row description messages are
+      sent (as a simple query can contain multiple statements that return rows).
+
+      [handle_row] is called for every row returned by the query.
+
+      If a [Pgasync_error.t] is returned, this indicates that the connection was closed
+      during processing. The query may or may not have successfully ran from the server's
+      perspective.
+
+
+      Queries containing COPY FROM STDIN will fail as this function does not support this
+      operation.  Queries containing COPY TO STDOUT will succeed, but the copydata will
+      not be delivered to [handle_row], and a warning will appear in [Simple_query_status]
+  *)
+  val simple_query
+    :  ?handle_columns:(Column_metadata.t array -> unit)
+    -> t
+    -> string
+    -> handle_row:(column_names:string array -> values:string option array -> unit)
+    -> Simple_query_result.t Deferred.t
 
   module Without_background_asynchronous_message_handling : sig
     type t

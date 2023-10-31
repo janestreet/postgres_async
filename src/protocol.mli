@@ -1,5 +1,17 @@
 open Core
 
+module Shared : sig
+  module CopyData : sig
+    type t = string
+
+    val skip : ('a, Iobuf.seek) Iobuf.t -> unit
+  end
+
+  module CopyDone : sig
+    val consume : ([> read ], Iobuf.seek) Iobuf.t -> unit
+  end
+end
+
 module Frontend : sig
   module StartupMessage : sig
     type t =
@@ -64,8 +76,10 @@ module Frontend : sig
     type t = { reason : string }
   end
 
-  module CopyData : sig
+  module Query : sig
     type t = string
+
+    val consume : ([> read ], Iobuf.seek) Iobuf.t -> t Or_error.t
   end
 
   module CancelRequest : sig
@@ -86,10 +100,11 @@ module Frontend : sig
     val parse : Writer.t -> Parse.t -> unit
     val bind : Writer.t -> Bind.t -> unit
     val close : Writer.t -> Close.t -> unit
+    val query : Writer.t -> Query.t -> unit
     val describe : Writer.t -> Describe.t -> unit
     val execute : Writer.t -> Execute.t -> unit
     val copy_fail : Writer.t -> CopyFail.t -> unit
-    val copy_data : Writer.t -> CopyData.t -> unit
+    val copy_data : Writer.t -> Shared.CopyData.t -> unit
     val cancel_request : Writer.t -> CancelRequest.t -> unit
     val flush : Writer.t -> unit
     val sync : Writer.t -> unit
@@ -184,6 +199,7 @@ module Backend : sig
       { error_code : string
       ; all_fields : (Error_or_notice_field.t * string) list
       }
+    [@@deriving sexp_of]
 
     val consume : ([> read ], Iobuf.seek) Iobuf.t -> t Or_error.t
   end
@@ -204,11 +220,18 @@ module Backend : sig
     val consume : ([> read ], Iobuf.seek) Iobuf.t -> t Or_error.t
   end
 
+  module ParameterDescription : sig
+    type t = int array
+
+    val consume : ([> read ], Iobuf.seek) Iobuf.t -> t Or_error.t
+  end
+
   module ParameterStatus : sig
     type t =
       { key : string
       ; data : string
       }
+    [@@deriving sexp_of]
 
     val consume : ([> read ], Iobuf.seek) Iobuf.t -> t Or_error.t
   end
@@ -225,6 +248,7 @@ module Backend : sig
       ; channel : Types.Notification_channel.t
       ; payload : string
       }
+    [@@deriving sexp_of]
 
     val consume : ([> read ], Iobuf.seek) Iobuf.t -> t Or_error.t
   end
@@ -252,10 +276,6 @@ module Backend : sig
   end
 
   module EmptyQueryResponse : sig
-    val consume : ([> read ], Iobuf.seek) Iobuf.t -> unit
-  end
-
-  module CopyDone : sig
     val consume : ([> read ], Iobuf.seek) Iobuf.t -> unit
   end
 
@@ -300,10 +320,6 @@ module Backend : sig
   module CopyInResponse : CopyResponse
   module CopyOutResponse : CopyResponse
 
-  module CopyData : sig
-    val skip : ([> read ], Iobuf.seek) Iobuf.t -> unit
-  end
-
   module CommandComplete : sig
     type t = string
 
@@ -317,6 +333,18 @@ module Backend : sig
     val ready_for_query : Writer.t -> ReadyForQuery.t -> unit
     val error_response : Writer.t -> ErrorResponse.t -> unit
     val backend_key : Writer.t -> Types.backend_key -> unit
+    val parameter_description : Writer.t -> ParameterDescription.t -> unit
     val parameter_status : Writer.t -> ParameterStatus.t -> unit
+    val command_complete : Writer.t -> CommandComplete.t -> unit
+    val data_row : Writer.t -> DataRow.t -> unit
+    val notice_response : Writer.t -> NoticeResponse.t -> unit
+    val notification_response : Writer.t -> NotificationResponse.t -> unit
+    val copy_data : Writer.t -> Shared.CopyData.t -> unit
+    val copy_done : Writer.t -> unit
+    val bind_complete : Writer.t -> unit
+    val close_complete : Writer.t -> unit
+    val empty_query_response : Writer.t -> unit
+    val parse_complete : Writer.t -> unit
+    val no_data : Writer.t -> unit
   end
 end

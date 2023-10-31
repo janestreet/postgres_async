@@ -58,12 +58,12 @@ let%expect_test ("Demonstrate that cancelling running queries is possible" [@tag
         (close_result : unit Or_error.t)];
   [%expect
     {|
-    ((query_to_cancel
-      (Result
-       (Error
-        ("Error during query execution (despite parsing ok)"
-         ((Code 57014) (Message "canceling statement due to user request"))))))
-     (cancel_result (Ok ())) (begin_result (Ok ())) (close_result (Ok ()))) |}];
+     ((query_to_cancel
+       (Result
+        (Error
+         ("Error during query execution (despite parsing ok)"
+          ((Code 57014) (Message "canceling statement due to user request"))))))
+      (cancel_result (Ok ())) (begin_result (Ok ())) (close_result (Ok ()))) |}];
   [%expect {||}];
   return ()
 ;;

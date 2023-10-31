@@ -348,3 +348,147 @@ let%expect_test "Error Response " =
      (all_fields ((Code 28000) (Severity FATAL) (Message auth-error)))) |}];
   Deferred.unit
 ;;
+
+let%expect_test "Data Row" =
+  let write writer =
+    Protocol.Backend.Writer.data_row
+      writer
+      (Array.of_list [ Some "Col 1"; Some "Col 2"; None; Some "Col 4" ])
+  in
+  let read_payload ~payload_length:_ iobuf =
+    let (row : string option array) =
+      Protocol.Backend.DataRow.consume iobuf |> Or_error.ok_exn
+    in
+    print_s [%message (row : string option array)]
+  in
+  let read = read_message ~read_message_type_char:true ~read_payload in
+  let%bind () = roundtrip ~write ~read in
+  [%expect
+    {|
+    (message_char (D))
+    (length 37)
+    (row (("Col 1") ("Col 2") () ("Col 4"))) |}];
+  Deferred.unit
+;;
+
+let%expect_test "Command Complete" =
+  let write writer = Protocol.Backend.Writer.command_complete writer "DELETE 10" in
+  let read_payload ~payload_length:_ iobuf =
+    let (response : string) =
+      Protocol.Backend.CommandComplete.consume iobuf |> Or_error.ok_exn
+    in
+    print_s [%message (response : string)]
+  in
+  let read = read_message ~read_message_type_char:true ~read_payload in
+  let%bind () = roundtrip ~write ~read in
+  [%expect {|
+    (message_char (C))
+    (length 14)
+    (response "DELETE 10") |}];
+  Deferred.unit
+;;
+
+let%expect_test "Notice Response" =
+  let write writer =
+    Protocol.Backend.Writer.notice_response
+      writer
+      { error_code = "00000"; all_fields = [ Severity, "LOG" ] }
+  in
+  let read_payload ~payload_length:_ iobuf =
+    let (response : Protocol.Backend.NoticeResponse.t) =
+      Protocol.Backend.NoticeResponse.consume iobuf |> Or_error.ok_exn
+    in
+    print_s [%message (response : Protocol.Backend.NoticeResponse.t)]
+  in
+  let read = read_message ~read_message_type_char:true ~read_payload in
+  let%bind () = roundtrip ~write ~read in
+  [%expect
+    {|
+    (message_char (N))
+    (length 17)
+    (response ((error_code 00000) (all_fields ((Code 00000) (Severity LOG))))) |}];
+  Deferred.unit
+;;
+
+let%expect_test "Notification Response" =
+  let write writer =
+    Protocol.Backend.Writer.notification_response
+      writer
+      { pid = Pid.of_int 10
+      ; channel =
+          Postgres_async.Private.Types.Notification_channel.of_string "Test Channel"
+      ; payload = "Test Payload"
+      }
+  in
+  let read_payload ~payload_length:_ iobuf =
+    let (response : Protocol.Backend.NotificationResponse.t) =
+      Protocol.Backend.NotificationResponse.consume iobuf |> Or_error.ok_exn
+    in
+    print_s [%message (response : Protocol.Backend.NotificationResponse.t)]
+  in
+  let read = read_message ~read_message_type_char:true ~read_payload in
+  let%bind () = roundtrip ~write ~read in
+  [%expect
+    {|
+    (message_char (A))
+    (length 34)
+    (response ((pid 10) (channel "Test Channel") (payload "Test Payload"))) |}];
+  Deferred.unit
+;;
+
+let%expect_test "Parameter Description" =
+  let write writer =
+    Protocol.Backend.Writer.parameter_description writer (Array.of_list [ 12; 23; 1; 5 ])
+  in
+  let read_payload ~payload_length:_ iobuf =
+    let (response : int array) =
+      Protocol.Backend.ParameterDescription.consume iobuf |> Or_error.ok_exn
+    in
+    print_s [%message (response : int array)]
+  in
+  let read = read_message ~read_message_type_char:true ~read_payload in
+  let%bind () = roundtrip ~write ~read in
+  [%expect {|
+    (message_char (t))
+    (length 22)
+    (response (12 23 1 5)) |}];
+  Deferred.unit
+;;
+
+let%expect_test "Parameter Status" =
+  let write writer =
+    Protocol.Backend.Writer.parameter_status writer { key = "user"; data = "root" }
+  in
+  let read_payload ~payload_length:_ iobuf =
+    let (response : Protocol.Backend.ParameterStatus.t) =
+      Protocol.Backend.ParameterStatus.consume iobuf |> Or_error.ok_exn
+    in
+    print_s [%message (response : Protocol.Backend.ParameterStatus.t)]
+  in
+  let read = read_message ~read_message_type_char:true ~read_payload in
+  let%bind () = roundtrip ~write ~read in
+  [%expect
+    {|
+    (message_char (S))
+    (length 14)
+    (response ((key user) (data root))) |}];
+  Deferred.unit
+;;
+
+let%expect_test "Query" =
+  let write writer =
+    Protocol.Frontend.Writer.query writer "SELECT * FROM a; SELECT * FROM a;"
+  in
+  let read_payload ~payload_length:_ iobuf =
+    let (response : string) = Protocol.Frontend.Query.consume iobuf |> Or_error.ok_exn in
+    print_s [%message response]
+  in
+  let read = read_message ~read_message_type_char:true ~read_payload in
+  let%bind () = roundtrip ~write ~read in
+  [%expect
+    {|
+    (message_char (Q))
+    (length 38)
+    "SELECT * FROM a; SELECT * FROM a;" |}];
+  Deferred.unit
+;;
