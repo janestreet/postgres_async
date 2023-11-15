@@ -999,7 +999,7 @@ module Expert = struct
                 [%message
                   "Postgres Server indicated it does not understand the SSLRequest \
                    message. This may mean that the server is running a very outdated \
-                   version of postgres, or some other problem may be occuring. You can \
+                   version of postgres, or some other problem may be occurring. You can \
                    try to run with ssl_mode = Disable to skip the SSLRequest and use \
                    plain TCP."
                     (response_char : Char.t)]))

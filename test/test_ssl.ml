@@ -177,7 +177,7 @@ let%expect_test "Do not use SSL or connect if server returns unknown char respon
     {|
     closing writer
     (error
-     ("Postgres Server indicated it does not understand the SSLRequest message. This may mean that the server is running a very outdated version of postgres, or some other problem may be occuring. You can try to run with ssl_mode = Disable to skip the SSLRequest and use plain TCP."
+     ("Postgres Server indicated it does not understand the SSLRequest message. This may mean that the server is running a very outdated version of postgres, or some other problem may be occurring. You can try to run with ssl_mode = Disable to skip the SSLRequest and use plain TCP."
       (response_char E))) |}];
   Deferred.unit
 ;;
@@ -217,7 +217,7 @@ let%expect_test "SSL negotiation: Error if SSL is required but not available" =
     {|
     closing writer
     (error
-     ("Postgres Server indicated it does not understand the SSLRequest message. This may mean that the server is running a very outdated version of postgres, or some other problem may be occuring. You can try to run with ssl_mode = Disable to skip the SSLRequest and use plain TCP."
+     ("Postgres Server indicated it does not understand the SSLRequest message. This may mean that the server is running a very outdated version of postgres, or some other problem may be occurring. You can try to run with ssl_mode = Disable to skip the SSLRequest and use plain TCP."
       (response_char E))) |}];
   Deferred.unit
 ;;
