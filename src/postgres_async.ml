@@ -338,7 +338,6 @@ module Expert = struct
        ordinarily be sent across a new connection. The server will process this request and
        then close the connection. For security reasons, no direct reply is made to the
        cancel request message.
-
     *)
     let pq_cancel t =
       let (Where_to_connect server) = t.where_to_connect in
@@ -687,11 +686,9 @@ module Expert = struct
       match Protocol.Backend.NoticeResponse.consume iobuf with
       | Error err -> Error (Pgasync_error.of_error err)
       | Ok { error_code = _; all_fields } ->
-        Log.Global.sexp
-          ~level:`Info
-          [%message
-            "Postgres NoticeResponse"
-              ~_:(all_fields : (Protocol.Backend.Error_or_notice_field.t * string) list)];
+        [%log.global.info
+          "Postgres NoticeResponse"
+            ~_:(all_fields : (Protocol.Backend.Error_or_notice_field.t * string) list)];
         Ok ()
     ;;
 
@@ -710,12 +707,9 @@ module Expert = struct
         let bus = notification_bus t channel in
         (match Bus.num_subscribers bus with
          | 0 ->
-           Log.Global.sexp
-             ~level:`Error
-             [%message
-               "Postgres NotificationResponse on channel that no callbacks are listening \
-                to"
-                 (channel : Notification_channel.t)]
+           [%log.global.error
+             "Postgres NotificationResponse on channel that no callbacks are listening to"
+               (channel : Notification_channel.t)]
          | _ -> Bus.write2 bus pid payload);
         Ok ()
     ;;
