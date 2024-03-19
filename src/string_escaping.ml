@@ -17,9 +17,8 @@ module Copy_in = struct
   let query ?schema_name ~table_name ~column_names () =
     let column_names =
       (if Lazy.force quote_table_name_requested
-       then Array.map column_names ~f:escape_identifier
+       then List.map column_names ~f:escape_identifier
        else column_names)
-      |> Array.to_list
       |> String.concat ~sep:", "
     in
     let table_name =

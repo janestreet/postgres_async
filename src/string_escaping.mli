@@ -6,7 +6,7 @@ module Copy_in : sig
   val query
     :  ?schema_name:string
     -> table_name:string
-    -> column_names:string array
+    -> column_names:string list
     -> unit
     -> string
 

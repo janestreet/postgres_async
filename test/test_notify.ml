@@ -55,7 +55,8 @@ let%expect_test "listen/notify" =
     [%expect
       {|
       (notification (channel channel-2) (payload m1))
-      (notification (channel channel-2) (payload m2)) |}];
+      (notification (channel channel-2) (payload m2))
+      |}];
     return ())
 ;;
 
@@ -88,7 +89,8 @@ let%expect_test "multiple listeners" =
       {|
       (notification (channel a) (payload ""))
       (notification (channel a) (payload ""))
-      (notification (channel a) (payload "")) |}];
+      (notification (channel a) (payload ""))
+      |}];
     return ())
 ;;
 
@@ -114,6 +116,7 @@ let%expect_test "notify with no listeners" =
         {|
         (LOG
          ("Postgres NotificationResponse on channel that no callbacks are listening to"
-          (channel channel_three))) |}];
+          (channel channel_three)))
+        |}];
       return ()))
 ;;

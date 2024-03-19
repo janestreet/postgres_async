@@ -52,7 +52,8 @@ let%expect_test "deadlock_detected has error_code=40P01" =
         (Error
           (error_code (40P01))
           (severity   (ERROR))
-          (as_error ("Postgres Server Error (state=Executing)" ((Code 40P01))))) |}];
+          (as_error ("Postgres Server Error (state=Executing)" ((Code 40P01)))))
+        |}];
       return ())
   in
   print_or_pgasync_error connection_result;
@@ -92,7 +93,8 @@ let%expect_test "error_code is erased from the result of query against a dead co
           (as_error (
             "ErrorResponse received asynchronously, assuming connection is dead"
             ((Severity FATAL)
-             (Code     57P01))))) |}];
+             (Code     57P01)))))
+        |}];
       (* Attempting to issue new queries against the connection produces an error that
          specifies what the original error was, but does not claim the error code, since
          this error is not directly attributable to this query and it would be misleading
@@ -110,7 +112,8 @@ let%expect_test "error_code is erased from the result of query against a dead co
             (original_error (
               "ErrorResponse received asynchronously, assuming connection is dead"
               ((Severity FATAL)
-               (Code     57P01))))))) |}];
+               (Code     57P01)))))))
+        |}];
       return ())
   in
   print_or_pgasync_error result;

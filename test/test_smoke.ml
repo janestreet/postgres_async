@@ -26,13 +26,13 @@ let%expect_test "check that fundamental copy-in features work" =
         "CREATE TEMPORARY TABLE x ( y integer PRIMARY KEY, z text )"
     in
     Or_error.ok_exn result;
-    [%expect {||}];
+    [%expect {| |}];
     let%bind result =
       let countdown = ref 10 in
       Postgres_async.copy_in_rows
         postgres
         ~table_name:"x"
-        ~column_names:[| "y"; "z" |]
+        ~column_names:[ "y"; "z" ]
         ~feed_data:(fun () ->
         match !countdown with
         | 0 -> Finished
@@ -42,7 +42,7 @@ let%expect_test "check that fundamental copy-in features work" =
             [| Some (Int.to_string i); Option.some_if (i % 2 = 0) (sprintf "asdf-%i" i) |])
     in
     Or_error.ok_exn result;
-    [%expect {||}];
+    [%expect {| |}];
     let%bind result =
       Postgres_async.query
         postgres
@@ -63,6 +63,7 @@ let%expect_test "check that fundamental copy-in features work" =
       ((y (7)) (z ()))
       ((y (8)) (z (asdf-8)))
       ((y (9)) (z ()))
-      ((y (10)) (z (asdf-10))) |}];
+      ((y (10)) (z (asdf-10)))
+      |}];
     return ())
 ;;

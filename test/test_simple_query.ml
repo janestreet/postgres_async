@@ -68,7 +68,8 @@ let%expect_test "CREATE + INSERT" =
         \n        INSERT INTO a (x, y, z) VALUES\
         \n        ('2000-01-01 00:00:00', 1, 'test string'),\
         \n        ('2000-01-01 00:00:00', 5, E'nasty\\nstring\\t''\\\",x'),\
-        \n        ('2019-03-14 00:00:00', 10, NULL); ")) |}];
+        \n        ('2019-03-14 00:00:00', 10, NULL); "))
+      |}];
     return ())
 ;;
 
@@ -97,16 +98,18 @@ let%expect_test "SELECT" =
         \n        INSERT INTO a (x, y, z) VALUES\
         \n        ('2000-01-01 00:00:00', 1, 'test string'),\
         \n        ('2000-01-01 00:00:00', 5, E'nasty\\nstring\\t''\\\",x'),\
-        \n        ('2019-03-14 00:00:00', 10, NULL); ")) |}];
+        \n        ('2019-03-14 00:00:00', 10, NULL); "))
+      |}];
     let%bind () = query "SELECT * FROM a ORDER BY y" in
     [%expect
       {|
-    (("2000-01-01 00:00:00") (1) ("test string"))
-    (("2000-01-01 00:00:00") (5) ( "nasty\
-                                  \nstring\t'\",x"))
-    (("2019-03-14 00:00:00") (10) ())
-    ("Query executed successfully with no warnings"
-     (query_string "SELECT * FROM a ORDER BY y")) |}];
+      (("2000-01-01 00:00:00") (1) ("test string"))
+      (("2000-01-01 00:00:00") (5) ( "nasty\
+                                    \nstring\t'\",x"))
+      (("2019-03-14 00:00:00") (10) ())
+      ("Query executed successfully with no warnings"
+       (query_string "SELECT * FROM a ORDER BY y"))
+      |}];
     return ())
 ;;
 
@@ -128,17 +131,18 @@ let%expect_test "Chained CREATE + INSERT + SELECT" =
     let%bind () = query query_string in
     [%expect
       {|
-    (("2000-01-01 00:00:00") (1) ("test string"))
-    (("2000-01-01 00:00:00") (5) ( "nasty\
-                                  \nstring\t'\",x"))
-    (("2019-03-14 00:00:00") (10) ())
-    ("Query executed successfully with no warnings"
-     (query_string
-       "CREATE TEMPORARY TABLE a ( x timestamp, y integer PRIMARY KEY, z text );\
-      \n        INSERT INTO a (x, y, z) VALUES\
-      \n        ('2000-01-01 00:00:00', 1, 'test string'),\
-      \n        ('2000-01-01 00:00:00', 5, E'nasty\\nstring\\t''\\\",x'),\
-      \n        ('2019-03-14 00:00:00', 10, NULL); SELECT * FROM a ORDER BY y")) |}];
+      (("2000-01-01 00:00:00") (1) ("test string"))
+      (("2000-01-01 00:00:00") (5) ( "nasty\
+                                    \nstring\t'\",x"))
+      (("2019-03-14 00:00:00") (10) ())
+      ("Query executed successfully with no warnings"
+       (query_string
+         "CREATE TEMPORARY TABLE a ( x timestamp, y integer PRIMARY KEY, z text );\
+        \n        INSERT INTO a (x, y, z) VALUES\
+        \n        ('2000-01-01 00:00:00', 1, 'test string'),\
+        \n        ('2000-01-01 00:00:00', 5, E'nasty\\nstring\\t''\\\",x'),\
+        \n        ('2019-03-14 00:00:00', 10, NULL); SELECT * FROM a ORDER BY y"))
+      |}];
     return ())
 ;;
 
@@ -167,19 +171,21 @@ let%expect_test "Chained SELECTs" =
         \n        INSERT INTO a (x, y, z) VALUES\
         \n        ('2000-01-01 00:00:00', 1, 'test string'),\
         \n        ('2050-01-01 00:00:00', 5, E'nasty\\nstring\\t''\\\",x'),\
-        \n        ('2019-03-14 00:00:00', 10, NULL); ")) |}];
+        \n        ('2019-03-14 00:00:00', 10, NULL); "))
+      |}];
     let%bind () = query "SELECT x,y FROM a ORDER BY y; SELECT y,z FROM a ORDER BY x" in
     [%expect
       {|
-    (("2000-01-01 00:00:00") (1))
-    (("2050-01-01 00:00:00") (5))
-    (("2019-03-14 00:00:00") (10))
-    ((1) ("test string"))
-    ((10) ())
-    ((5) ( "nasty\
-          \nstring\t'\",x"))
-    ("Query executed successfully with no warnings"
-     (query_string "SELECT x,y FROM a ORDER BY y; SELECT y,z FROM a ORDER BY x")) |}];
+      (("2000-01-01 00:00:00") (1))
+      (("2050-01-01 00:00:00") (5))
+      (("2019-03-14 00:00:00") (10))
+      ((1) ("test string"))
+      ((10) ())
+      ((5) ( "nasty\
+            \nstring\t'\",x"))
+      ("Query executed successfully with no warnings"
+       (query_string "SELECT x,y FROM a ORDER BY y; SELECT y,z FROM a ORDER BY x"))
+      |}];
     return ())
 ;;
 
@@ -208,26 +214,29 @@ let%expect_test "Gracefully handles errors without closing connection" =
         \n        INSERT INTO a (x, y, z) VALUES\
         \n        ('2000-01-01 00:00:00', 1, 'test string'),\
         \n        ('2050-01-01 00:00:00', 5, E'nasty\\nstring\\t''\\\",x'),\
-        \n        ('2019-03-14 00:00:00', 10, NULL); ")) |}];
+        \n        ('2019-03-14 00:00:00', 10, NULL); "))
+      |}];
     let%bind () = query "SELECT 1/0; SELECT * FROM a" in
     [%expect
       {|
-    ("Server reported error "
-     (error
-      ("Postgres Server Error" ((Code 22012) (Message "division by zero"))))) |}];
+      ("Server reported error "
+       (error
+        ("Postgres Server Error" ((Code 22012) (Message "division by zero")))))
+      |}];
     let%bind () = query "SELECT * FROM a ORDER BY y; SELECT * FROM a ORDER BY x" in
     [%expect
       {|
-    (("2000-01-01 00:00:00") (1) ("test string"))
-    (("2050-01-01 00:00:00") (5) ( "nasty\
-                                  \nstring\t'\",x"))
-    (("2019-03-14 00:00:00") (10) ())
-    (("2000-01-01 00:00:00") (1) ("test string"))
-    (("2019-03-14 00:00:00") (10) ())
-    (("2050-01-01 00:00:00") (5) ( "nasty\
-                                  \nstring\t'\",x"))
-    ("Query executed successfully with no warnings"
-     (query_string "SELECT * FROM a ORDER BY y; SELECT * FROM a ORDER BY x")) |}];
+      (("2000-01-01 00:00:00") (1) ("test string"))
+      (("2050-01-01 00:00:00") (5) ( "nasty\
+                                    \nstring\t'\",x"))
+      (("2019-03-14 00:00:00") (10) ())
+      (("2000-01-01 00:00:00") (1) ("test string"))
+      (("2019-03-14 00:00:00") (10) ())
+      (("2050-01-01 00:00:00") (5) ( "nasty\
+                                    \nstring\t'\",x"))
+      ("Query executed successfully with no warnings"
+       (query_string "SELECT * FROM a ORDER BY y; SELECT * FROM a ORDER BY x"))
+      |}];
     return ())
 ;;
 
@@ -257,16 +266,18 @@ let%expect_test "Treats chained commands as an implicit transaction" =
         \n        INSERT INTO a (x, y, z) VALUES\
         \n        ('2000-01-01 00:00:00', 1, 'test string'),\
         \n        ('2050-01-01 00:00:00', 5, E'nasty\\nstring\\t''\\\",x'),\
-        \n        ('2019-03-14 00:00:00', 10, NULL); ")) |}];
+        \n        ('2019-03-14 00:00:00', 10, NULL); "))
+      |}];
     let%bind () = query_exn "SELECT * FROM a ORDER BY y;" in
     [%expect
       {|
-    (("2000-01-01 00:00:00") (1) ("test string"))
-    (("2050-01-01 00:00:00") (5) ( "nasty\
-                                  \nstring\t'\",x"))
-    (("2019-03-14 00:00:00") (10) ())
-    ("Query executed successfully with no warnings"
-     (query_string "SELECT * FROM a ORDER BY y;")) |}];
+      (("2000-01-01 00:00:00") (1) ("test string"))
+      (("2050-01-01 00:00:00") (5) ( "nasty\
+                                    \nstring\t'\",x"))
+      (("2019-03-14 00:00:00") (10) ())
+      ("Query executed successfully with no warnings"
+       (query_string "SELECT * FROM a ORDER BY y;"))
+      |}];
     (* The invalid SELECT command should cause a rollback of the first INSERT *)
     let%bind () =
       query
@@ -276,19 +287,21 @@ INSERT INTO mytable VALUES(2);|}
     in
     [%expect
       {|
-    ("Server reported error "
-     (error
-      ("Postgres Server Error" ((Code 22012) (Message "division by zero"))))) |}];
+      ("Server reported error "
+       (error
+        ("Postgres Server Error" ((Code 22012) (Message "division by zero")))))
+      |}];
     (* We expect the same values to be returned as the first SELECT statement *)
     let%bind () = query_exn "SELECT * FROM a ORDER BY y;" in
     [%expect
       {|
-    (("2000-01-01 00:00:00") (1) ("test string"))
-    (("2050-01-01 00:00:00") (5) ( "nasty\
-                                  \nstring\t'\",x"))
-    (("2019-03-14 00:00:00") (10) ())
-    ("Query executed successfully with no warnings"
-     (query_string "SELECT * FROM a ORDER BY y;")) |}];
+      (("2000-01-01 00:00:00") (1) ("test string"))
+      (("2050-01-01 00:00:00") (5) ( "nasty\
+                                    \nstring\t'\",x"))
+      (("2019-03-14 00:00:00") (10) ())
+      ("Query executed successfully with no warnings"
+       (query_string "SELECT * FROM a ORDER BY y;"))
+      |}];
     return ())
 ;;
 
@@ -302,7 +315,8 @@ let%expect_test "COPYIN is gracefully handled without terminating connection" =
       ("Query executed successfully with no warnings"
        (query_string "CREATE TEMPORARY TABLE a (x integer);"))
       ("Query executed successfully with no warnings"
-       (query_string " INSERT INTO a VALUES (1), (2) ")) |}];
+       (query_string " INSERT INTO a VALUES (1), (2) "))
+      |}];
     let%bind () = query "COPY a FROM STDIN; SELECT * FROM a" in
     (* Note that COPY IN fails with an error since we have to send the server a message
        which kills the transfer of information.
@@ -311,20 +325,22 @@ let%expect_test "COPYIN is gracefully handled without terminating connection" =
     *)
     [%expect
       {|
-    ("Server reported error "
-     (error
-      ("Postgres Server Error"
-       ((Code 57014)
-        (Message
-         "COPY from stdin failed: Command ignored: COPY FROM STDIN is not appropriate for [Postgres_async.simple_query]")
-        (Where "COPY a, line 1: \"\""))))) |}];
+      ("Server reported error "
+       (error
+        ("Postgres Server Error"
+         ((Code 57014)
+          (Message
+           "COPY from stdin failed: Command ignored: COPY FROM STDIN is not appropriate for [Postgres_async.simple_query]")
+          (Where "COPY a, line 1: \"\"")))))
+      |}];
     let%bind () = query "SELECT * FROM a" in
     [%expect
       {|
-    ((1))
-    ((2))
-    ("Query executed successfully with no warnings"
-     (query_string "SELECT * FROM a")) |}];
+      ((1))
+      ((2))
+      ("Query executed successfully with no warnings"
+       (query_string "SELECT * FROM a"))
+      |}];
     return ())
 ;;
 
@@ -338,39 +354,43 @@ let%expect_test "COPYIN is gracefully handled in a chained statement" =
       ("Query executed successfully with no warnings"
        (query_string "CREATE TEMPORARY TABLE a (x integer);"))
       ("Query executed successfully with no warnings"
-       (query_string " INSERT INTO a VALUES (1), (2) ")) |}];
+       (query_string " INSERT INTO a VALUES (1), (2) "))
+      |}];
     (* Should only return an error message since the error at the first statement
        prevents the SELECT from running*)
     let%bind () = query "COPY a FROM STDIN; SELECT * FROM a" in
     [%expect
       {|
-    ("Server reported error "
-     (error
-      ("Postgres Server Error"
-       ((Code 57014)
-        (Message
-         "COPY from stdin failed: Command ignored: COPY FROM STDIN is not appropriate for [Postgres_async.simple_query]")
-        (Where "COPY a, line 1: \"\""))))) |}];
+      ("Server reported error "
+       (error
+        ("Postgres Server Error"
+         ((Code 57014)
+          (Message
+           "COPY from stdin failed: Command ignored: COPY FROM STDIN is not appropriate for [Postgres_async.simple_query]")
+          (Where "COPY a, line 1: \"\"")))))
+      |}];
     (* Should return both the results of the SELECT and an error message *)
     let%bind () = query "SELECT * FROM a; COPY a FROM STDIN;" in
     [%expect
       {|
-    ((1))
-    ((2))
-    ("Server reported error "
-     (error
-      ("Postgres Server Error"
-       ((Code 57014)
-        (Message
-         "COPY from stdin failed: Command ignored: COPY FROM STDIN is not appropriate for [Postgres_async.simple_query]")
-        (Where "COPY a, line 1: \"\""))))) |}];
+      ((1))
+      ((2))
+      ("Server reported error "
+       (error
+        ("Postgres Server Error"
+         ((Code 57014)
+          (Message
+           "COPY from stdin failed: Command ignored: COPY FROM STDIN is not appropriate for [Postgres_async.simple_query]")
+          (Where "COPY a, line 1: \"\"")))))
+      |}];
     let%bind () = query "SELECT * FROM a" in
     [%expect
       {|
-    ((1))
-    ((2))
-    ("Query executed successfully with no warnings"
-     (query_string "SELECT * FROM a")) |}];
+      ((1))
+      ((2))
+      ("Query executed successfully with no warnings"
+       (query_string "SELECT * FROM a"))
+      |}];
     return ())
 ;;
 
@@ -384,21 +404,24 @@ let%expect_test "COPYOUT is gracefully handled without terminating connection" =
       ("Query executed successfully with no warnings"
        (query_string "CREATE TEMPORARY TABLE a (x integer);"))
       ("Query executed successfully with no warnings"
-       (query_string " INSERT INTO a VALUES (1), (2) ")) |}];
+       (query_string " INSERT INTO a VALUES (1), (2) "))
+      |}];
     let%bind () = query "COPY a TO STDOUT" in
     [%expect
       {|
-    ("Query executed successfully with warnings"
-     (query_string "COPY a TO STDOUT")
-     (warnings
-      ("Command ignored: COPY TO STDOUT is not appropriate for [Postgres_async.simple_query]"))) |}];
+      ("Query executed successfully with warnings"
+       (query_string "COPY a TO STDOUT")
+       (warnings
+        ("Command ignored: COPY TO STDOUT is not appropriate for [Postgres_async.simple_query]")))
+      |}];
     let%bind () = query "SELECT * FROM a" in
     [%expect
       {|
-    ((1))
-    ((2))
-    ("Query executed successfully with no warnings"
-     (query_string "SELECT * FROM a")) |}];
+      ((1))
+      ((2))
+      ("Query executed successfully with no warnings"
+       (query_string "SELECT * FROM a"))
+      |}];
     return ())
 ;;
 
@@ -412,34 +435,38 @@ let%expect_test "COPY OUT is gracefully handled in a chained statement" =
       ("Query executed successfully with no warnings"
        (query_string "CREATE TEMPORARY TABLE a (x integer);"))
       ("Query executed successfully with no warnings"
-       (query_string " INSERT INTO a VALUES (1), (2) ")) |}];
+       (query_string " INSERT INTO a VALUES (1), (2) "))
+      |}];
     (* Should still run the full statement since the client-side prevents COPY OUT,
        not the server *)
     let%bind () = query "COPY a TO STDOUT; SELECT * FROM a" in
     [%expect
       {|
-    ((1))
-    ((2))
-    ("Query executed successfully with warnings"
-     (query_string "COPY a TO STDOUT; SELECT * FROM a")
-     (warnings
-      ("Command ignored: COPY TO STDOUT is not appropriate for [Postgres_async.simple_query]"))) |}];
+      ((1))
+      ((2))
+      ("Query executed successfully with warnings"
+       (query_string "COPY a TO STDOUT; SELECT * FROM a")
+       (warnings
+        ("Command ignored: COPY TO STDOUT is not appropriate for [Postgres_async.simple_query]")))
+      |}];
     let%bind () = query "SELECT * FROM a; COPY a TO STDOUT;" in
     [%expect
       {|
-    ((1))
-    ((2))
-    ("Query executed successfully with warnings"
-     (query_string "SELECT * FROM a; COPY a TO STDOUT;")
-     (warnings
-      ("Command ignored: COPY TO STDOUT is not appropriate for [Postgres_async.simple_query]"))) |}];
+      ((1))
+      ((2))
+      ("Query executed successfully with warnings"
+       (query_string "SELECT * FROM a; COPY a TO STDOUT;")
+       (warnings
+        ("Command ignored: COPY TO STDOUT is not appropriate for [Postgres_async.simple_query]")))
+      |}];
     let%bind () = query "SELECT * FROM a" in
     [%expect
       {|
-    ((1))
-    ((2))
-    ("Query executed successfully with no warnings"
-     (query_string "SELECT * FROM a")) |}];
+      ((1))
+      ((2))
+      ("Query executed successfully with no warnings"
+       (query_string "SELECT * FROM a"))
+      |}];
     return ())
 ;;
 
@@ -465,19 +492,21 @@ let%expect_test "Chained SELECTs work across multiple tables" =
       ("Query executed successfully with no warnings"
        (query_string
          "INSERT INTO a VALUES (1), (2); INSERT INTO b VALUES ('foo'), ('bar');\
-        \n         INSERT INTO c VALUES (true), (false);")) |}];
+        \n         INSERT INTO c VALUES (true), (false);"))
+      |}];
     let%bind () = query "SELECT * FROM a; SELECT * FROM b order by y; SELECT * FROM C;" in
     [%expect
       {|
-    ((1))
-    ((2))
-    ((bar))
-    ((foo))
-    ((t))
-    ((f))
-    ("Query executed successfully with no warnings"
-     (query_string
-      "SELECT * FROM a; SELECT * FROM b order by y; SELECT * FROM C;")) |}];
+      ((1))
+      ((2))
+      ((bar))
+      ((foo))
+      ((t))
+      ((f))
+      ("Query executed successfully with no warnings"
+       (query_string
+        "SELECT * FROM a; SELECT * FROM b order by y; SELECT * FROM C;"))
+      |}];
     return ())
 ;;
 
@@ -505,15 +534,17 @@ let%expect_test "COPY OUT generates warnings but doesn't prevent query execution
          "INSERT INTO a VALUES (1), (2); INSERT INTO b VALUES ('foo'), ('bar');\
         \n         INSERT INTO c VALUES (true), (false); COPY a TO STDOUT; INSERT INTO a VALUES (3)")
        (warnings
-        ("Command ignored: COPY TO STDOUT is not appropriate for [Postgres_async.simple_query]"))) |}];
+        ("Command ignored: COPY TO STDOUT is not appropriate for [Postgres_async.simple_query]")))
+      |}];
     let%bind () = query "SELECT * FROM a" in
     [%expect
       {|
-    ((1))
-    ((2))
-    ((3))
-    ("Query executed successfully with no warnings"
-     (query_string "SELECT * FROM a")) |}];
+      ((1))
+      ((2))
+      ((3))
+      ("Query executed successfully with no warnings"
+       (query_string "SELECT * FROM a"))
+      |}];
     return ())
 ;;
 
@@ -532,7 +563,8 @@ let%expect_test "Exception handling in handle_row" =
       Postgres_async.status postgres |> [%sexp_of: Postgres_async.state] |> print_s;
       [%expect {|
         Got exn from simple_query
-        Open |}];
+        Open
+        |}];
       return ())
 ;;
 
@@ -554,7 +586,8 @@ let%expect_test "Exception handling in handle_column" =
       Postgres_async.status postgres |> [%sexp_of: Postgres_async.state] |> print_s;
       [%expect {|
         Got exn from simple_query
-        Open |}];
+        Open
+        |}];
       return ())
 ;;
 
@@ -606,26 +639,27 @@ let%expect_test "handle_column" =
     in
     [%expect
       {|
-    Handle columns called
-    ((values (("2000-01-01 00:00:00") (1) ("test string")))
-     (column_names (x y z)) (column_data (((x 1114) (y 23) (z 25)))))
-    ((values (("2000-01-01 00:00:00") (5) ( "nasty\
-                                           \nstring\t'\",x")))
-     (column_names (x y z)) (column_data (((x 1114) (y 23) (z 25)))))
-    ((values (("2019-03-14 00:00:00") (10) ())) (column_names (x y z))
-     (column_data (((x 1114) (y 23) (z 25)))))
-    Handle columns called
-    ((values (("2000-01-01 00:00:00") (1))) (column_names (x y))
-     (column_data (((x 1114) (y 23)))))
-    ((values (("2000-01-01 00:00:00") (5))) (column_names (x y))
-     (column_data (((x 1114) (y 23)))))
-    ((values (("2019-03-14 00:00:00") (10))) (column_names (x y))
-     (column_data (((x 1114) (y 23)))))
-    Handle columns called
-    ((values (( "nasty\
-               \nstring\t'\",x")))
-     (column_names (z)) (column_data (((z 25)))))
-    ((values (("test string"))) (column_names (z)) (column_data (((z 25)))))
-    ((values (())) (column_names (z)) (column_data (((z 25))))) |}];
+      Handle columns called
+      ((values (("2000-01-01 00:00:00") (1) ("test string")))
+       (column_names (x y z)) (column_data (((x 1114) (y 23) (z 25)))))
+      ((values (("2000-01-01 00:00:00") (5) ( "nasty\
+                                             \nstring\t'\",x")))
+       (column_names (x y z)) (column_data (((x 1114) (y 23) (z 25)))))
+      ((values (("2019-03-14 00:00:00") (10) ())) (column_names (x y z))
+       (column_data (((x 1114) (y 23) (z 25)))))
+      Handle columns called
+      ((values (("2000-01-01 00:00:00") (1))) (column_names (x y))
+       (column_data (((x 1114) (y 23)))))
+      ((values (("2000-01-01 00:00:00") (5))) (column_names (x y))
+       (column_data (((x 1114) (y 23)))))
+      ((values (("2019-03-14 00:00:00") (10))) (column_names (x y))
+       (column_data (((x 1114) (y 23)))))
+      Handle columns called
+      ((values (( "nasty\
+                 \nstring\t'\",x")))
+       (column_names (z)) (column_data (((z 25)))))
+      ((values (("test string"))) (column_names (z)) (column_data (((z 25)))))
+      ((values (())) (column_names (z)) (column_data (((z 25)))))
+      |}];
     return ())
 ;;

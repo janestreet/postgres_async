@@ -58,13 +58,14 @@ let%expect_test ("Demonstrate that cancelling running queries is possible" [@tag
         (close_result : unit Or_error.t)];
   [%expect
     {|
-     ((query_to_cancel
-       (Result
-        (Error
-         ("Error during query execution (despite parsing ok)"
-          ((Code 57014) (Message "canceling statement due to user request"))))))
-      (cancel_result (Ok ())) (begin_result (Ok ())) (close_result (Ok ()))) |}];
-  [%expect {||}];
+    ((query_to_cancel
+      (Result
+       (Error
+        ("Error during query execution (despite parsing ok)"
+         ((Code 57014) (Message "canceling statement due to user request"))))))
+     (cancel_result (Ok ())) (begin_result (Ok ())) (close_result (Ok ())))
+    |}];
+  [%expect {| |}];
   return ()
 ;;
 
@@ -83,6 +84,7 @@ let%expect_test "Parse full backend key range" =
   [%expect
     {|
     ((pid_sent 9999) (secret_sent 2147483647))
-    ((pid 9999) (secret 2147483647)) |}];
+    ((pid 9999) (secret 2147483647))
+    |}];
   Deferred.unit
 ;;

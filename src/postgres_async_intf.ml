@@ -118,7 +118,7 @@ module type S = sig
     :  ?schema_name:string
     -> t
     -> table_name:string
-    -> column_names:string array
+    -> column_names:string list
     -> feed_data:(unit -> string option array feed_data_result)
     -> (unit, error) Result.t Deferred.t
 

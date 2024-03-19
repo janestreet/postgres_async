@@ -152,7 +152,8 @@ let%expect_test "SSL negotation failure does not raise" =
       (Ssl_error
        ("error:1408F10B:SSL routines:ssl3_get_record:wrong version number")
        lib/async_ssl/src/ssl.ml:218:20)
-      ("<backtrace elided in test>" "Caught by monitor ssl_pipe"))) |}];
+      ("<backtrace elided in test>" "Caught by monitor ssl_pipe")))
+    |}];
   Deferred.unit
 ;;
 
@@ -162,8 +163,7 @@ let%expect_test "SSL negotiation: Do not use SSL" =
       ~handle_client:(handle_client ~ssl_char:'N')
       ~f:(connect_and_close ~ssl_mode:Prefer)
   in
-  [%expect {|
-    Connected |}];
+  [%expect {| Connected |}];
   Deferred.unit
 ;;
 
@@ -178,7 +178,8 @@ let%expect_test "Do not use SSL or connect if server returns unknown char respon
     closing writer
     (error
      ("Postgres Server indicated it does not understand the SSLRequest message. This may mean that the server is running a very outdated version of postgres, or some other problem may be occurring. You can try to run with ssl_mode = Disable to skip the SSLRequest and use plain TCP."
-      (response_char E))) |}];
+      (response_char E)))
+    |}];
   Deferred.unit
 ;;
 
@@ -207,7 +208,8 @@ let%expect_test "SSL negotiation: Error if SSL is required but not available" =
   [%expect
     {|
     (error
-     "Server indicated it cannot use SSL connections, but ssl_mode is set to Require") |}];
+     "Server indicated it cannot use SSL connections, but ssl_mode is set to Require")
+    |}];
   let%bind () =
     with_manual_server
       ~handle_client:(handle_client ~ssl_char:'E')
@@ -218,7 +220,8 @@ let%expect_test "SSL negotiation: Error if SSL is required but not available" =
     closing writer
     (error
      ("Postgres Server indicated it does not understand the SSLRequest message. This may mean that the server is running a very outdated version of postgres, or some other problem may be occurring. You can try to run with ssl_mode = Disable to skip the SSLRequest and use plain TCP."
-      (response_char E))) |}];
+      (response_char E)))
+    |}];
   Deferred.unit
 ;;
 
@@ -230,7 +233,8 @@ let%expect_test "sslmode = Disable skips sslrequest" =
   in
   [%expect {|
     skipped ssl
-    Connected |}];
+    Connected
+    |}];
   Deferred.unit
 ;;
 
@@ -259,6 +263,7 @@ let%expect_test "Connect to live postgres" =
   [%expect
     {|
     (error
-     "Server indicated it cannot use SSL connections, but ssl_mode is set to Require") |}];
+     "Server indicated it cannot use SSL connections, but ssl_mode is set to Require")
+    |}];
   return ()
 ;;

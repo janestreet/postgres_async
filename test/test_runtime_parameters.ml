@@ -51,7 +51,8 @@ let%expect_test "get runtime parameters" =
      ((DateStyle "ISO, MDY") (IntervalStyle postgres) (TimeZone LOCAL)
       (application_name "") (client_encoding SQL_ASCII) (integer_datetimes on)
       (is_superuser on) (server_encoding SQL_ASCII) (server_version 12.10)
-      (session_authorization postgres) (standard_conforming_strings on))) |}];
+      (session_authorization postgres) (standard_conforming_strings on)))
+    |}];
   return ()
 ;;
 
@@ -69,7 +70,8 @@ let%expect_test "set runtime parameters" =
       (application_name simple_app) (client_encoding SQL_ASCII)
       (integer_datetimes on) (is_superuser on) (server_encoding SQL_ASCII)
       (server_version 12.10) (session_authorization postgres)
-      (standard_conforming_strings on))) |}];
+      (standard_conforming_strings on)))
+    |}];
   return ()
 ;;
 
@@ -85,6 +87,7 @@ let%expect_test "set options" =
       (application_name "My \\complicated  appname") (client_encoding SQL_ASCII)
       (integer_datetimes on) (is_superuser on) (server_encoding SQL_ASCII)
       (server_version 12.10) (session_authorization postgres)
-      (standard_conforming_strings on))) |}];
+      (standard_conforming_strings on)))
+    |}];
   return ()
 ;;

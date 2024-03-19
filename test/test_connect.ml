@@ -42,7 +42,8 @@ let%expect_test "interrupt - TCP" =
         [%expect
           {|
           (monitor.ml.Error ("connection attempt aborted" 127.0.0.1:PORT)
-           ("<backtrace elided in test>" "Caught by monitor try_with_or_error")) |}];
+           ("<backtrace elided in test>" "Caught by monitor try_with_or_error"))
+          |}];
         return ())
   in
   let%bind () =
@@ -84,7 +85,8 @@ let%expect_test "interrupt - SSL" =
         [%expect
           {|
           (monitor.ml.Error ("connection attempt aborted" 127.0.0.1:PORT)
-           ("<backtrace elided in test>" "Caught by monitor try_with_or_error")) |}];
+           ("<backtrace elided in test>" "Caught by monitor try_with_or_error"))
+          |}];
         return ())
   in
   let%bind () =
@@ -162,7 +164,7 @@ let%expect_test "password authentication" =
       let%bind () = q "GRANT role_password_login TO auth_test_1" in
       return ())
   in
-  [%expect {||}];
+  [%expect {| |}];
   let%bind () = try_login harness ~user:"auth_test_1" ~password:"test-password" in
   [%expect {| OK; user:auth_test_1 database:postgres |}];
   let%bind () = try_login harness ~user:"auth_test_1" ~password:"bad" in
@@ -247,7 +249,8 @@ let%expect_test "connection refused" =
     (Error
      (monitor.ml.Error
       (Unix.Unix_error "Connection refused" connect 127.0.0.1:PORT)
-      ("<backtrace elided in test>" "Caught by monitor Tcp.close_sock_on_error"))) |}];
+      ("<backtrace elided in test>" "Caught by monitor Tcp.close_sock_on_error")))
+    |}];
   return ()
 ;;
 

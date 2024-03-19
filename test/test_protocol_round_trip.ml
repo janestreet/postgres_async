@@ -65,7 +65,8 @@ let%expect_test "Simple Startup" =
     (message_char ())
     (length 40)
     ((user test-user) (database testdb) (replication ()) (options ())
-     (runtime_parameters ())) |}];
+     (runtime_parameters ()))
+    |}];
   Deferred.unit
 ;;
 
@@ -76,7 +77,8 @@ let%expect_test "Replication Startup" =
     (message_char ())
     (length 61)
     ((user test-user) (database testdb) (replication (database)) (options ())
-     (runtime_parameters ())) |}];
+     (runtime_parameters ()))
+    |}];
   Deferred.unit
 ;;
 
@@ -92,7 +94,8 @@ let%expect_test "Startup with Params" =
     (message_char ())
     (length 79)
     ((user test-user) (database testdb) (replication ()) (options ())
-     (runtime_parameters ((client_encoding UTF8) (datestyle ISO,MDY)))) |}];
+     (runtime_parameters ((client_encoding UTF8) (datestyle ISO,MDY))))
+    |}];
   Deferred.unit
 ;;
 
@@ -108,7 +111,8 @@ let%expect_test "Startup with Options" =
     (length 92)
     ((user test-user) (database testdb) (replication ())
      (options (client_encoding=UTF8 statement_timeout=3000))
-     (runtime_parameters ())) |}];
+     (runtime_parameters ()))
+    |}];
   Deferred.unit
 ;;
 
@@ -124,7 +128,8 @@ let%expect_test "Startup with Options with space" =
     (length 111)
     ((user test-user) (database testdb) (replication ())
      (options ("application_name='More Spaces Please'" statement_timeout=3000))
-     (runtime_parameters ())) |}];
+     (runtime_parameters ()))
+    |}];
   Deferred.unit
 ;;
 
@@ -145,7 +150,8 @@ let%expect_test "Startup with Options with multi space and backslash" =
      (options
       ("--application_name='My \\very complicated   a\\p\\p name'"
        --statement_timeout=3000))
-     (runtime_parameters ())) |}];
+     (runtime_parameters ()))
+    |}];
   Deferred.unit
 ;;
 
@@ -167,7 +173,8 @@ let%expect_test "KRB password message " =
   [%expect {|
     (message_char (p))
     (length 8)
-    (blob blob) |}];
+    (blob blob)
+    |}];
   Deferred.unit
 ;;
 
@@ -188,7 +195,8 @@ let%expect_test "Password password message " =
   [%expect {|
     (message_char (p))
     (length 8)
-    (blob hex) |}];
+    (blob hex)
+    |}];
   Deferred.unit
 ;;
 
@@ -245,7 +253,8 @@ let%expect_test "Authentication Request message " =
     ((sent SSPI) (msg SSPI))
     (message_char (R))
     (length 15)
-    ((sent (GSSContinue (data gsscont))) (msg (GSSContinue (data gsscont)))) |}];
+    ((sent (GSSContinue (data gsscont))) (msg (GSSContinue (data gsscont))))
+    |}];
   Deferred.unit
 ;;
 
@@ -278,7 +287,8 @@ let%expect_test "Authentication Request message " =
     ((sent In_transaction) (msg In_transaction))
     (message_char (Z))
     (length 5)
-    ((sent In_failed_transaction) (msg In_failed_transaction)) |}];
+    ((sent In_failed_transaction) (msg In_failed_transaction))
+    |}];
   Deferred.unit
 ;;
 
@@ -294,10 +304,12 @@ let%expect_test "BackendKeyData " =
   in
   let read = read_message ~read_message_type_char:true ~read_payload in
   let%bind () = roundtrip ~write ~read in
-  [%expect {|
+  [%expect
+    {|
     (message_char (K))
     (length 12)
-    ((pid 1234) (secret 4444)) |}];
+    ((pid 1234) (secret 4444))
+    |}];
   Deferred.unit
 ;;
 
@@ -319,7 +331,8 @@ let%expect_test "Paramter Status " =
     {|
     (message_char (S))
     (length 24)
-    ((key server_version) (data 13.6)) |}];
+    ((key server_version) (data 13.6))
+    |}];
   Deferred.unit
 ;;
 
@@ -345,7 +358,8 @@ let%expect_test "Error Response " =
     (message_char (E))
     (length 31)
     ((error_code 28000)
-     (all_fields ((Code 28000) (Severity FATAL) (Message auth-error)))) |}];
+     (all_fields ((Code 28000) (Severity FATAL) (Message auth-error))))
+    |}];
   Deferred.unit
 ;;
 
@@ -367,7 +381,8 @@ let%expect_test "Data Row" =
     {|
     (message_char (D))
     (length 37)
-    (row (("Col 1") ("Col 2") () ("Col 4"))) |}];
+    (row (("Col 1") ("Col 2") () ("Col 4")))
+    |}];
   Deferred.unit
 ;;
 
@@ -384,7 +399,8 @@ let%expect_test "Command Complete" =
   [%expect {|
     (message_char (C))
     (length 14)
-    (response "DELETE 10") |}];
+    (response "DELETE 10")
+    |}];
   Deferred.unit
 ;;
 
@@ -406,7 +422,8 @@ let%expect_test "Notice Response" =
     {|
     (message_char (N))
     (length 17)
-    (response ((error_code 00000) (all_fields ((Code 00000) (Severity LOG))))) |}];
+    (response ((error_code 00000) (all_fields ((Code 00000) (Severity LOG)))))
+    |}];
   Deferred.unit
 ;;
 
@@ -432,7 +449,8 @@ let%expect_test "Notification Response" =
     {|
     (message_char (A))
     (length 34)
-    (response ((pid 10) (channel "Test Channel") (payload "Test Payload"))) |}];
+    (response ((pid 10) (channel "Test Channel") (payload "Test Payload")))
+    |}];
   Deferred.unit
 ;;
 
@@ -451,7 +469,8 @@ let%expect_test "Parameter Description" =
   [%expect {|
     (message_char (t))
     (length 22)
-    (response (12 23 1 5)) |}];
+    (response (12 23 1 5))
+    |}];
   Deferred.unit
 ;;
 
@@ -471,7 +490,8 @@ let%expect_test "Parameter Status" =
     {|
     (message_char (S))
     (length 14)
-    (response ((key user) (data root))) |}];
+    (response ((key user) (data root)))
+    |}];
   Deferred.unit
 ;;
 
@@ -489,6 +509,7 @@ let%expect_test "Query" =
     {|
     (message_char (Q))
     (length 38)
-    "SELECT * FROM a; SELECT * FROM a;" |}];
+    "SELECT * FROM a; SELECT * FROM a;"
+    |}];
   Deferred.unit
 ;;
