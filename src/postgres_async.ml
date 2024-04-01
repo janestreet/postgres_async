@@ -87,10 +87,17 @@ module Pgasync_error = struct
     }
 
   let sexp_of_t t = [%sexp (t.error : Error.t)]
-  let of_error e = { error = e; server_error = None }
+
+  let of_error ?error_code e =
+    { error = e
+    ; server_error =
+        Option.map error_code ~f:(fun error_code -> { error_code; all_fields = [] })
+    }
+  ;;
+
   let of_exn e = of_error (Error.of_exn e)
-  let of_string s = of_error (Error.of_string s)
-  let create_s s = of_error (Error.create_s s)
+  let of_string ?error_code s = of_error ?error_code (Error.of_string s)
+  let create_s ?error_code s = of_error ?error_code (Error.create_s s)
 
   let of_error_response (error_response : Protocol.Backend.ErrorResponse.t) =
     let error =
@@ -143,8 +150,8 @@ module Or_pgasync_error = struct
   ;;
 
   let error_s s = Error (Pgasync_error.create_s s)
-  let error_string s = Error (Pgasync_error.of_string s)
-  let errorf fmt = ksprintf error_string fmt
+  let error_string ?error_code s = Error (Pgasync_error.of_string ?error_code s)
+  let errorf ?error_code fmt = ksprintf (error_string ?error_code) fmt
   let of_exn e = Error (Pgasync_error.of_exn e)
 end
 
@@ -378,12 +385,22 @@ module Expert = struct
             with
             | Ok `Eof -> return (Ok ())
             | Ok (`Ok c) ->
-              return (Or_pgasync_error.errorf "EOF expected, but got '%c'" c)
+              let also_available = Reader.peek_available t.reader ~len:128 in
+              return
+                (Or_pgasync_error.errorf
+                   ~error_code:"08000"
+                   (* connection exception *) "close: EOF expected, but got '%c%s'"
+                   c
+                   also_available)
             | Error exn -> return (Or_pgasync_error.of_exn exn))
         in
         (match%bind Clock.with_timeout (sec 1.) closed_gracefully_deferred with
          | `Timeout ->
-           failed t (Pgasync_error.of_string "EOF expected, but instead stuck");
+           failed
+             t
+             (Pgasync_error.of_string
+                ~error_code:"08000"
+                (* connection exception *) "close: EOF expected, but instead stuck");
            return ()
          | `Result (Error err) ->
            failed t err;
@@ -590,7 +607,10 @@ module Expert = struct
 
     let handle_chunk ~handle_message ~pushback =
       let stop_error sexp =
-        return (`Stop (`Protocol_error (Pgasync_error.create_s sexp)))
+        return
+          (`Stop
+            (`Protocol_error
+              (Pgasync_error.create_s ~error_code:"08P01" (* protocol violation *) sexp)))
       in
       let rec loop iobuf =
         let chunk_hi_bound = Iobuf.Hi_bound.window iobuf in
@@ -642,7 +662,10 @@ module Expert = struct
     let can't_read_because_closed =
       lazy
         (return
-           (Connection_closed (Pgasync_error.of_string "can't read: closed or closing")))
+           (Connection_closed
+              (Pgasync_error.of_string
+                 ~error_code:"08003"
+                 (* connection does not exist *) "can't read: closed or closing")))
     ;;
 
     let run_reader ?(pushback = no_pushback) t ~handle_message =
@@ -669,11 +692,14 @@ module Expert = struct
              | `Eof_with_unconsumed_data data ->
                `Protocol_error
                  (Pgasync_error.create_s
+                    ~error_code:"08003" (* connection does not exist *)
                     [%message
                       "Unexpected EOF" ~unconsumed_bytes:(String.length data : int)])
              | `Eof ->
                `Protocol_error
-                 (Pgasync_error.of_string "Unexpected EOF (no unconsumed messages)")
+                 (Pgasync_error.of_string
+                    ~error_code:"08003" (* connection does not exist *)
+                    "Unexpected EOF (no unconsumed messages)")
            in
            (match res with
             | `Protocol_error err ->
@@ -694,7 +720,8 @@ module Expert = struct
 
     let handle_parameter_status t iobuf =
       match Protocol.Backend.ParameterStatus.consume iobuf with
-      | Error err -> Error (Pgasync_error.of_error err)
+      | Error err ->
+        Error (Pgasync_error.of_error ~error_code:"08P01" (* protocol error *) err)
       | Ok { key; data } ->
         Hashtbl.set t.runtime_parameters ~key ~data;
         Ok ()
@@ -702,7 +729,8 @@ module Expert = struct
 
     let handle_notification_response t iobuf =
       match Protocol.Backend.NotificationResponse.consume iobuf with
-      | Error err -> Error (Pgasync_error.of_error err)
+      | Error err ->
+        Error (Pgasync_error.of_error ~error_code:"08P01" (* protocol error *) err)
       | Ok { pid; channel; payload } ->
         let bus = notification_bus t channel in
         (match Bus.num_subscribers bus with
@@ -756,13 +784,15 @@ module Expert = struct
           in
           let error =
             match Protocol.Backend.ErrorResponse.consume iobuf with
-            | Error err -> Pgasync_error.of_error err
+            | Error err ->
+              Pgasync_error.of_error ~error_code:"08P01" (* protocol error *) err
             | Ok err -> Pgasync_error.of_error_response err |> Pgasync_error.tag ~tag
           in
           Protocol_error error
         | other ->
           Protocol_error
             (Pgasync_error.create_s
+               ~error_code:"08P01" (* protocol error *)
                [%message
                  "Unsolicited message from server outside of query conversation"
                    (other : Protocol.Backend.constructor)])
@@ -773,11 +803,17 @@ module Expert = struct
 
   include Message_reading
 
-  let protocol_error_of_error error = Protocol_error (Pgasync_error.of_error error)
-  let protocol_error_s sexp = Protocol_error (Pgasync_error.create_s sexp)
+  let protocol_error_of_error ?error_code error =
+    Protocol_error (Pgasync_error.of_error ?error_code error)
+  ;;
+
+  let protocol_error_s ?error_code sexp =
+    Protocol_error (Pgasync_error.create_s ?error_code sexp)
+  ;;
 
   let unexpected_msg_type msg_type state =
     protocol_error_s
+      ~error_code:"08P01" (* protocol violation *)
       [%message
         "Unexpected message type"
           (msg_type : Protocol.Backend.constructor)
@@ -807,7 +843,10 @@ module Expert = struct
               Continue
             | None ->
               let s = "Server requested (md5) password, but no password was provided" in
-              Stop (Or_pgasync_error.error_string s))
+              Stop
+                (Or_pgasync_error.error_string
+                   ~error_code:"28P01"
+                   (* invalid password *) s))
          | Ok GSS ->
            (match gss_krb_token with
             | Some token ->
@@ -816,29 +855,44 @@ module Expert = struct
               Continue
             | None ->
               let s = "Server requested GSS auth, but no gss_krb_token was provided" in
-              Stop (Or_pgasync_error.error_string s))
+              Stop
+                (Or_pgasync_error.error_string
+                   ~error_code:"28P01"
+                   (* invalid password *) s))
          | Ok other ->
            let s =
              sprintf !"Server wants unimplemented auth subtype: %{sexp:Q.t}" other
            in
-           Stop (Or_pgasync_error.error_string s))
+           Stop
+             (Or_pgasync_error.error_string
+                ~error_code:"28000"
+                (* invalid authorization specification *) s))
       | BackendKeyData ->
         (match Protocol.Backend.BackendKeyData.consume iobuf with
-         | Error err -> protocol_error_of_error err
+         | Error err ->
+           protocol_error_of_error ~error_code:"08P01" (* protocol violation *) err
          | Ok data ->
            (match Set_once.set t.backend_key [%here] data with
             | Ok () -> Continue
-            | Error _ -> protocol_error_s [%sexp "duplicate BackendKeyData messages"]))
+            | Error _ ->
+              protocol_error_s
+                ~error_code:"08P01"
+                (* protocol violation *) [%sexp "duplicate BackendKeyData messages"]))
       | ReadyForQuery ->
         let module Q = Protocol.Backend.ReadyForQuery in
         (match Q.consume iobuf with
-         | Error err -> protocol_error_of_error err
+         | Error err ->
+           protocol_error_of_error ~error_code:"08P01" (* protocol violation *) err
          | Ok Idle -> Stop (Ok ())
          | Ok st ->
-           protocol_error_s [%message "Unexpected initial transaction status" (st : Q.t)])
+           protocol_error_s
+             ~error_code:"08P01"
+             (* protocol violation *)
+             [%message "Unexpected initial transaction status" (st : Q.t)])
       | ErrorResponse ->
         (match Protocol.Backend.ErrorResponse.consume iobuf with
-         | Error err -> protocol_error_of_error err
+         | Error err ->
+           protocol_error_of_error ~error_code:"08P01" (* protocol violation *) err
          | Ok err -> Stop (Error (Pgasync_error.of_error_response err)))
       | msg_type -> unexpected_msg_type msg_type [%sexp "logging in"])
   ;;
@@ -1066,12 +1120,20 @@ module Expert = struct
         ~ssl_mode
         where_to_connect
     with
-    | Error error -> return (Error (Pgasync_error.of_error error))
+    | Error error ->
+      return
+        (Error
+           (Pgasync_error.of_error
+              ~error_code:"08001"
+              (* client cant establish connection *) error))
     | Ok (t, writer_failed) ->
       upon writer_failed (fun exn ->
         failed
           t
-          (Pgasync_error.create_s [%message "Writer failed asynchronously" (exn : Exn.t)]));
+          (Pgasync_error.create_s
+             ~error_code:"08003"
+             (* connection does not exist *)
+             [%message "Writer failed asynchronously" (exn : Exn.t)]));
       let login_failed err =
         failed t err;
         return (Error err)
@@ -1083,7 +1145,11 @@ module Expert = struct
                `Result l)
            ]
        with
-       | `Interrupt -> login_failed (Pgasync_error.of_string "login interrupted")
+       | `Interrupt ->
+         login_failed
+           (Pgasync_error.of_string
+              ~error_code:"08001"
+              (* client cant establish connection *) "login interrupted")
        | `Result (Connection_closed err) -> return (Error err)
        | `Result (Done (Error err)) -> login_failed err
        | `Result (Done (Ok ())) -> return (Ok t))
@@ -1137,7 +1203,12 @@ module Expert = struct
       | None -> default_user ()
     in
     match user with
-    | Error err -> return (Error (Pgasync_error.of_error err))
+    | Error err ->
+      return
+        (Error
+           (Pgasync_error.of_error
+              ~error_code:"08001"
+              (* client unable to establish connection *) err))
     | Ok user ->
       let startup_message =
         Protocol.Frontend.StartupMessage.
@@ -1299,13 +1370,17 @@ module Expert = struct
       return
         (Connection_closed
            (Pgasync_error.create_s
+              ~error_code:"08003" (* connection does not exist *)
               [%message
                 "query issued against previously-failed connection"
                   ~original_error:(error : Pgasync_error.t)]))
     | Closing | Closed_gracefully ->
       return
         (Connection_closed
-           (Pgasync_error.of_string "query issued against connection closed by user"))
+           (Pgasync_error.of_string
+              ~error_code:"08003"
+              (* connection does not exist *)
+              "query issued against connection closed by user"))
     | Open ->
       catch_write_errors t ~flush_message:Write_afterwards ~f:(fun writer ->
         Protocol.Frontend.Writer.parse
@@ -1717,6 +1792,7 @@ module Expert = struct
         let new_result =
           Simple_query_status.Unsupported_message_type
             (Pgasync_error.create_s
+               ~error_code:"08P01" (* protocol violation *)
                [%message
                  "Invalid message type for Postgres Simple Query protocol"
                    (message_type : Protocol.Backend.constructor)])
@@ -1767,6 +1843,25 @@ module Expert = struct
     match !callback_raised with
     | true -> Deferred.never ()
     | false -> return result
+  ;;
+
+  let execute_simple t query_string =
+    let returned_rows = ref false in
+    let%map result =
+      simple_query
+        t
+        query_string
+        ~handle_row:
+          (fun
+            ~column_names:(_ : string array) ~values:(_ : string option array) ->
+        returned_rows := true)
+    in
+    if !returned_rows
+    then
+      Simple_query_result.Driver_error
+        (Pgasync_error.create_s
+           [%message "[Postgres_async.execute_simple]: query returned at least one row"])
+    else result
   ;;
 
   (* [query_expect_no_data] doesn't need the separation that [internal_query] and [query]
@@ -2064,12 +2159,13 @@ module Private = struct
   module Protocol = Protocol
   module Types = Types
 
-  let pgasync_error_of_error = Pgasync_error.of_error
+  let pgasync_error_of_error = Pgasync_error.of_error ?error_code:None
   let pq_cancel = Expert.pq_cancel
 
   module Simple_query_result = Expert.Simple_query_result
 
   let simple_query = Expert.simple_query
+  let execute_simple = Expert.execute_simple
 
   module Without_background_asynchronous_message_handling = struct
     type nonrec t = t

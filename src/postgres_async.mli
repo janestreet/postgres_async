@@ -147,9 +147,9 @@ module Private : sig
   end
 
   (** Executes a query according to the Postgres Simple Query protocol.  As specified in
-      the protocol, multiple commands can be chained together using semi-colons and
-      executed. If not already in a transaction, the query is treated as a transaction and
-      all commands within it are executed atomically.
+      the protocol, multiple commands can be chained together using semicolons and
+      executed in one operation. If not already in a transaction, the query is treated as
+      transaction and all commands within it are executed atomically.
 
       [handle_columns] is called on each column row description message. Note that
       with simple_query, it's possible that multiple row description messages are
@@ -172,6 +172,16 @@ module Private : sig
     -> string
     -> handle_row:(column_names:string array -> values:string option array -> unit)
     -> Simple_query_result.t Deferred.t
+
+  (** Executes a query that should not return any rows using the Postgres Simple Query
+      Protocol . As with [simple_query], multiple commands can be chained together using
+      semicolons. Inherits the transaction behavior of [simple_query].
+
+      If any of the queries fails, or returns at least one row, an error will be returned
+      and the transaction will be aborted.
+
+      As with [simple_query], queries containing COPY FROM STDIN will fail.*)
+  val execute_simple : t -> string -> Simple_query_result.t Deferred.t
 
   module Without_background_asynchronous_message_handling : sig
     type t

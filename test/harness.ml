@@ -10,15 +10,7 @@ type t =
 
 let postgres_bins =
   lazy
-    (let candidates =
-       [ "/usr/pgsql-12/bin"
-       ; "/usr/pgsql-11/bin"
-       ; "/usr/pgsql-10/bin"
-       ; "/usr/pgsql-9.6/bin"
-       ; "/usr/lib/postgresql/11/bin"
-       ; "/usr/lib/postgresql/9.6/bin"
-       ]
-     in
+    (let candidates = [ "/usr/pgsql-12/bin"; "/usr/pgsql-13/bin" ] in
      List.find candidates ~f:(fun dir ->
        match Sys_unix.is_directory dir with
        | `Yes -> true

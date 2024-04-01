@@ -105,8 +105,8 @@ let%expect_test "error_code is erased from the result of query against a dead co
       [%expect
         {|
         (Error
-          (error_code ())
-          (severity   ())
+          (error_code (08003))
+          (severity ())
           (as_error (
             "query issued against previously-failed connection"
             (original_error (

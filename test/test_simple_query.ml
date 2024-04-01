@@ -663,3 +663,73 @@ let%expect_test "handle_column" =
       |}];
     return ())
 ;;
+
+let%expect_test "execute_simple" =
+  with_connection_exn (fun postgres ->
+    let exec query_string =
+      Postgres_async.Private.execute_simple postgres query_string
+      >>| print_simple_query_result ~query_string
+    in
+    let%bind () = exec "CREATE TEMPORARY TABLE t (x int, y int)" in
+    [%expect
+      {|
+      ("Query executed successfully with no warnings"
+       (query_string "CREATE TEMPORARY TABLE t (x int, y int)"))
+      |}];
+    let%bind () = exec "ALTER TABLE t ADD COLUMN z int" in
+    [%expect
+      {|
+      ("Query executed successfully with no warnings"
+       (query_string "ALTER TABLE t ADD COLUMN z int"))
+      |}];
+    let%bind () = exec "INSERT INTO t (x, y, z) VALUES (1,2,3)" in
+    [%expect
+      {|
+      ("Query executed successfully with no warnings"
+       (query_string "INSERT INTO t (x, y, z) VALUES (1,2,3)"))
+      |}];
+    (* Multiple queries, all of which return no rows *)
+    let%bind () =
+      exec
+        {| INSERT INTO t (x, y, z) VALUES (10,20,30);
+           CREATE TEMPORARY TABLE u (a int);
+           ALTER TABLE u ADD COLUMN b INT; |}
+    in
+    [%expect
+      {|
+      ("Query executed successfully with no warnings"
+       (query_string
+         " INSERT INTO t (x, y, z) VALUES (10,20,30);\
+        \n           CREATE TEMPORARY TABLE u (a int);\
+        \n           ALTER TABLE u ADD COLUMN b INT; "))
+      |}];
+    (* Run a query that returns rows, check that it fails *)
+    let%bind () = exec "SELECT x,y,z FROM t" in
+    [%expect
+      {|
+      ("Driver error "
+       (error "[Postgres_async.execute_simple]: query returned at least one row"))
+      |}];
+    (* A query that returns no rows, followed by a query that returns rows, followed by a
+       query that doesn't return rows *)
+    let%bind () =
+      exec
+        {| INSERT INTO t (x, y, z) VALUES (10,20,30);
+           SELECT * FROM t;
+           CREATE TABLE v (x int); |}
+    in
+    [%expect
+      {|
+      ("Driver error "
+       (error "[Postgres_async.execute_simple]: query returned at least one row"))
+      |}];
+    (* Check that the third query above (the one that *didn't* return rows) still
+       succeeded *)
+    let%bind () = exec "DROP TABLE v" in
+    [%expect
+      {|
+      ("Query executed successfully with no warnings"
+       (query_string "DROP TABLE v"))
+      |}];
+    return ())
+;;
