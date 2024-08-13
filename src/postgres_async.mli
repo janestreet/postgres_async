@@ -48,6 +48,21 @@ module Pgasync_error : sig
   end
 
   val postgres_field : t -> Postgres_field.t -> string option
+
+  (** Queries and query parameters are included in the errors. To keep the length of error
+      messages in check, this information is abbreviated:
+      - long queries are truncated
+      - long parameter values are truncated
+      - only a limited number of parameters are displayed
+
+      You can change those global limits via [set_error_reporting_limits]
+  *)
+  val set_error_reporting_limits
+    :  ?query_length:int (** default: 2048 *)
+    -> ?parameter_length:int (** default: 128 *)
+    -> ?parameters:int (** default: 16 *)
+    -> unit
+    -> unit
 end
 
 module Or_pgasync_error : sig
@@ -100,10 +115,11 @@ type t [@@deriving sexp_of]
 
 include
   Postgres_async_intf.S
-    with type t := t
-     and type error := Error.t
-     and type column_metadata := Column_metadata.t
-     and type ssl_mode := Ssl_mode.t
+  with type t := t
+   and type error := Error.t
+   and type column_metadata := Column_metadata.t
+   and type ssl_mode := Ssl_mode.t
+   and type command_complete := unit
 
 (** The [Expert] module provides versions of all the same functions that instead return
     [Or_pgasync_error.t]s.
@@ -112,10 +128,43 @@ include
     whether you want to try and inspect the error code of a specific failure or not. *)
 module Expert :
   Postgres_async_intf.S
-    with type t := t
-     and type error := Pgasync_error.t
-     and type column_metadata := Column_metadata.t
-     and type ssl_mode := Ssl_mode.t
+  with type t := t
+   and type error := Pgasync_error.t
+   and type column_metadata := Column_metadata.t
+   and type ssl_mode := Ssl_mode.t
+   and type command_complete := unit
+
+module Command_complete : sig
+  type t [@@deriving sexp_of]
+
+  (** [tag] is a short description of the command that was completed, like "SELECT",
+      "BEGIN", "INSERT" or "CREATE TABLE", see description of the CommandComplete message
+      in https://www.postgresql.org/docs/current/protocol-message-formats.html *)
+  val tag : t -> string
+
+  (** [rows] returns the affected rows count for the completed command, if available and
+      was provided in the CommandComplete message *)
+  val rows : t -> int option
+end
+
+(** The [With_command_complete] module provides access to the contents of CommandComplete
+    message, that includes a string tag that describes the command that was executed, and
+    optional row count *)
+module With_command_complete :
+  Postgres_async_intf.S
+  with type t := t
+   and type error := Error.t
+   and type column_metadata := Column_metadata.t
+   and type ssl_mode := Ssl_mode.t
+   and type command_complete := Command_complete.t
+
+module Expert_with_command_complete :
+  Postgres_async_intf.S
+  with type t := t
+   and type error := Pgasync_error.t
+   and type column_metadata := Column_metadata.t
+   and type ssl_mode := Ssl_mode.t
+   and type command_complete := Command_complete.t
 
 module Private : sig
   module Protocol = Protocol
@@ -126,7 +175,8 @@ module Private : sig
 
   module Simple_query_result : sig
     (**
-       - Completed_with_no_warnings : everything worked as expected
+       - Completed_with_no_warnings : everything worked as expected. The list will contain
+         one Command_complete.t for each statement executed
        - Completed_with_warnings : the query ran successfully, but the query tried to do
          something unsupported client-side (e.g. COPY TO STDOUT).
        - Connection_error : The underlying connection died at some point during query
@@ -137,13 +187,13 @@ module Private : sig
     *)
 
     type t =
-      | Completed_with_no_warnings
-      | Completed_with_warnings of Error.t list
+      | Completed_with_no_warnings of Command_complete.t list
+      | Completed_with_warnings of (Command_complete.t list * Error.t list)
       | Failed of Pgasync_error.t
       | Connection_error of Pgasync_error.t
       | Driver_error of Pgasync_error.t
 
-    val to_or_pgasync_error : t -> unit Or_pgasync_error.t
+    val to_or_pgasync_error : t -> Command_complete.t list Or_pgasync_error.t
   end
 
   (** Executes a query according to the Postgres Simple Query protocol.  As specified in

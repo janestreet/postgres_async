@@ -170,7 +170,8 @@ let%expect_test "KRB password message " =
   in
   let read = read_message ~read_message_type_char:true ~read_payload in
   let%bind () = roundtrip ~write ~read in
-  [%expect {|
+  [%expect
+    {|
     (message_char (p))
     (length 8)
     (blob blob)
@@ -192,7 +193,8 @@ let%expect_test "Password password message " =
   in
   let read = read_message ~read_message_type_char:true ~read_payload in
   let%bind () = roundtrip ~write ~read in
-  [%expect {|
+  [%expect
+    {|
     (message_char (p))
     (length 8)
     (blob hex)
@@ -396,7 +398,8 @@ let%expect_test "Command Complete" =
   in
   let read = read_message ~read_message_type_char:true ~read_payload in
   let%bind () = roundtrip ~write ~read in
-  [%expect {|
+  [%expect
+    {|
     (message_char (C))
     (length 14)
     (response "DELETE 10")
@@ -466,7 +469,8 @@ let%expect_test "Parameter Description" =
   in
   let read = read_message ~read_message_type_char:true ~read_payload in
   let%bind () = roundtrip ~write ~read in
-  [%expect {|
+  [%expect
+    {|
     (message_char (t))
     (length 22)
     (response (12 23 1 5))

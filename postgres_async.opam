@@ -13,6 +13,7 @@ depends: [
   "ocaml" {>= "5.1.0"}
   "async"
   "async_ssl"
+  "async_unix"
   "core"
   "core_kernel"
   "ppx_jane"

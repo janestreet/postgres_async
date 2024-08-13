@@ -2,7 +2,7 @@ open Core
 
 type backend_key =
   { pid : int
-      (** The type of [pid] is intentionally [int] instead of [Core.Pid.t].
+  (** The type of [pid] is intentionally [int] instead of [Core.Pid.t].
 
       When the client is connected directly to a database cluster this field is expected
       to be a Linux PID, in which case the assumptions in internal validation of

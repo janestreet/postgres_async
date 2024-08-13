@@ -14,14 +14,19 @@ let with_connection_exn =
 
 let print_simple_query_result ~query_string res =
   match res with
-  | Postgres_async.Private.Simple_query_result.Completed_with_no_warnings ->
+  | Postgres_async.Private.Simple_query_result.Completed_with_no_warnings
+      commands_complete ->
     print_s
-      [%message "Query executed successfully with no warnings" (query_string : string)]
-  | Completed_with_warnings warnings ->
+      [%message
+        "Query executed successfully with no warnings"
+          (query_string : string)
+          (commands_complete : Postgres_async.Command_complete.t list)]
+  | Completed_with_warnings (commands_complete, warnings) ->
     print_s
       [%message
         "Query executed successfully with warnings"
           (query_string : string)
+          (commands_complete : Postgres_async.Command_complete.t list)
           (warnings : Error.t list)]
   | Connection_error error ->
     print_s [%message "Connection error " (error : Postgres_async.Pgasync_error.t)]
@@ -61,14 +66,16 @@ let%expect_test "CREATE + INSERT" =
       {|
       ("Query executed successfully with no warnings"
        (query_string
-        "CREATE TEMPORARY TABLE a ( x timestamp, y integer PRIMARY KEY, z text );"))
+        "CREATE TEMPORARY TABLE a ( x timestamp, y integer PRIMARY KEY, z text );")
+       (commands_complete (((tag "CREATE TABLE") (rows ())))))
       ("Query executed successfully with no warnings"
        (query_string
          "\
         \n        INSERT INTO a (x, y, z) VALUES\
         \n        ('2000-01-01 00:00:00', 1, 'test string'),\
         \n        ('2000-01-01 00:00:00', 5, E'nasty\\nstring\\t''\\\",x'),\
-        \n        ('2019-03-14 00:00:00', 10, NULL); "))
+        \n        ('2019-03-14 00:00:00', 10, NULL); ")
+       (commands_complete (((tag INSERT) (rows (3))))))
       |}];
     return ())
 ;;
@@ -91,14 +98,16 @@ let%expect_test "SELECT" =
       {|
       ("Query executed successfully with no warnings"
        (query_string
-        "CREATE TEMPORARY TABLE a ( x timestamp, y integer PRIMARY KEY, z text );"))
+        "CREATE TEMPORARY TABLE a ( x timestamp, y integer PRIMARY KEY, z text );")
+       (commands_complete (((tag "CREATE TABLE") (rows ())))))
       ("Query executed successfully with no warnings"
        (query_string
          "\
         \n        INSERT INTO a (x, y, z) VALUES\
         \n        ('2000-01-01 00:00:00', 1, 'test string'),\
         \n        ('2000-01-01 00:00:00', 5, E'nasty\\nstring\\t''\\\",x'),\
-        \n        ('2019-03-14 00:00:00', 10, NULL); "))
+        \n        ('2019-03-14 00:00:00', 10, NULL); ")
+       (commands_complete (((tag INSERT) (rows (3))))))
       |}];
     let%bind () = query "SELECT * FROM a ORDER BY y" in
     [%expect
@@ -108,7 +117,8 @@ let%expect_test "SELECT" =
                                     \nstring\t'\",x"))
       (("2019-03-14 00:00:00") (10) ())
       ("Query executed successfully with no warnings"
-       (query_string "SELECT * FROM a ORDER BY y"))
+       (query_string "SELECT * FROM a ORDER BY y")
+       (commands_complete (((tag SELECT) (rows (3))))))
       |}];
     return ())
 ;;
@@ -141,7 +151,10 @@ let%expect_test "Chained CREATE + INSERT + SELECT" =
         \n        INSERT INTO a (x, y, z) VALUES\
         \n        ('2000-01-01 00:00:00', 1, 'test string'),\
         \n        ('2000-01-01 00:00:00', 5, E'nasty\\nstring\\t''\\\",x'),\
-        \n        ('2019-03-14 00:00:00', 10, NULL); SELECT * FROM a ORDER BY y"))
+        \n        ('2019-03-14 00:00:00', 10, NULL); SELECT * FROM a ORDER BY y")
+       (commands_complete
+        (((tag "CREATE TABLE") (rows ())) ((tag INSERT) (rows (3)))
+         ((tag SELECT) (rows (3))))))
       |}];
     return ())
 ;;
@@ -164,14 +177,16 @@ let%expect_test "Chained SELECTs" =
       {|
       ("Query executed successfully with no warnings"
        (query_string
-        "CREATE TEMPORARY TABLE a ( x timestamp, y integer PRIMARY KEY, z text );"))
+        "CREATE TEMPORARY TABLE a ( x timestamp, y integer PRIMARY KEY, z text );")
+       (commands_complete (((tag "CREATE TABLE") (rows ())))))
       ("Query executed successfully with no warnings"
        (query_string
          "\
         \n        INSERT INTO a (x, y, z) VALUES\
         \n        ('2000-01-01 00:00:00', 1, 'test string'),\
         \n        ('2050-01-01 00:00:00', 5, E'nasty\\nstring\\t''\\\",x'),\
-        \n        ('2019-03-14 00:00:00', 10, NULL); "))
+        \n        ('2019-03-14 00:00:00', 10, NULL); ")
+       (commands_complete (((tag INSERT) (rows (3))))))
       |}];
     let%bind () = query "SELECT x,y FROM a ORDER BY y; SELECT y,z FROM a ORDER BY x" in
     [%expect
@@ -184,7 +199,8 @@ let%expect_test "Chained SELECTs" =
       ((5) ( "nasty\
             \nstring\t'\",x"))
       ("Query executed successfully with no warnings"
-       (query_string "SELECT x,y FROM a ORDER BY y; SELECT y,z FROM a ORDER BY x"))
+       (query_string "SELECT x,y FROM a ORDER BY y; SELECT y,z FROM a ORDER BY x")
+       (commands_complete (((tag SELECT) (rows (3))) ((tag SELECT) (rows (3))))))
       |}];
     return ())
 ;;
@@ -207,21 +223,24 @@ let%expect_test "Gracefully handles errors without closing connection" =
       {|
       ("Query executed successfully with no warnings"
        (query_string
-        "CREATE TEMPORARY TABLE a ( x timestamp, y integer PRIMARY KEY, z text );"))
+        "CREATE TEMPORARY TABLE a ( x timestamp, y integer PRIMARY KEY, z text );")
+       (commands_complete (((tag "CREATE TABLE") (rows ())))))
       ("Query executed successfully with no warnings"
        (query_string
          "\
         \n        INSERT INTO a (x, y, z) VALUES\
         \n        ('2000-01-01 00:00:00', 1, 'test string'),\
         \n        ('2050-01-01 00:00:00', 5, E'nasty\\nstring\\t''\\\",x'),\
-        \n        ('2019-03-14 00:00:00', 10, NULL); "))
+        \n        ('2019-03-14 00:00:00', 10, NULL); ")
+       (commands_complete (((tag INSERT) (rows (3))))))
       |}];
     let%bind () = query "SELECT 1/0; SELECT * FROM a" in
     [%expect
       {|
       ("Server reported error "
        (error
-        ("Postgres Server Error" ((Code 22012) (Message "division by zero")))))
+        ((query "SELECT 1/0; SELECT * FROM a")
+         ("Postgres Server Error" ((Code 22012) (Message "division by zero"))))))
       |}];
     let%bind () = query "SELECT * FROM a ORDER BY y; SELECT * FROM a ORDER BY x" in
     [%expect
@@ -235,7 +254,8 @@ let%expect_test "Gracefully handles errors without closing connection" =
       (("2050-01-01 00:00:00") (5) ( "nasty\
                                     \nstring\t'\",x"))
       ("Query executed successfully with no warnings"
-       (query_string "SELECT * FROM a ORDER BY y; SELECT * FROM a ORDER BY x"))
+       (query_string "SELECT * FROM a ORDER BY y; SELECT * FROM a ORDER BY x")
+       (commands_complete (((tag SELECT) (rows (3))) ((tag SELECT) (rows (3))))))
       |}];
     return ())
 ;;
@@ -259,14 +279,16 @@ let%expect_test "Treats chained commands as an implicit transaction" =
       {|
       ("Query executed successfully with no warnings"
        (query_string
-        "CREATE TEMPORARY TABLE a ( x timestamp, y integer PRIMARY KEY, z text );"))
+        "CREATE TEMPORARY TABLE a ( x timestamp, y integer PRIMARY KEY, z text );")
+       (commands_complete (((tag "CREATE TABLE") (rows ())))))
       ("Query executed successfully with no warnings"
        (query_string
          "\
         \n        INSERT INTO a (x, y, z) VALUES\
         \n        ('2000-01-01 00:00:00', 1, 'test string'),\
         \n        ('2050-01-01 00:00:00', 5, E'nasty\\nstring\\t''\\\",x'),\
-        \n        ('2019-03-14 00:00:00', 10, NULL); "))
+        \n        ('2019-03-14 00:00:00', 10, NULL); ")
+       (commands_complete (((tag INSERT) (rows (3))))))
       |}];
     let%bind () = query_exn "SELECT * FROM a ORDER BY y;" in
     [%expect
@@ -276,7 +298,8 @@ let%expect_test "Treats chained commands as an implicit transaction" =
                                     \nstring\t'\",x"))
       (("2019-03-14 00:00:00") (10) ())
       ("Query executed successfully with no warnings"
-       (query_string "SELECT * FROM a ORDER BY y;"))
+       (query_string "SELECT * FROM a ORDER BY y;")
+       (commands_complete (((tag SELECT) (rows (3))))))
       |}];
     (* The invalid SELECT command should cause a rollback of the first INSERT *)
     let%bind () =
@@ -289,7 +312,11 @@ INSERT INTO mytable VALUES(2);|}
       {|
       ("Server reported error "
        (error
-        ("Postgres Server Error" ((Code 22012) (Message "division by zero")))))
+        ((query
+           "INSERT INTO a VALUES('1950-01-01 00:00:00',15,NULL);\
+          \nSELECT 1/0;\
+          \nINSERT INTO mytable VALUES(2);")
+         ("Postgres Server Error" ((Code 22012) (Message "division by zero"))))))
       |}];
     (* We expect the same values to be returned as the first SELECT statement *)
     let%bind () = query_exn "SELECT * FROM a ORDER BY y;" in
@@ -300,7 +327,8 @@ INSERT INTO mytable VALUES(2);|}
                                     \nstring\t'\",x"))
       (("2019-03-14 00:00:00") (10) ())
       ("Query executed successfully with no warnings"
-       (query_string "SELECT * FROM a ORDER BY y;"))
+       (query_string "SELECT * FROM a ORDER BY y;")
+       (commands_complete (((tag SELECT) (rows (3))))))
       |}];
     return ())
 ;;
@@ -313,9 +341,11 @@ let%expect_test "COPYIN is gracefully handled without terminating connection" =
     [%expect
       {|
       ("Query executed successfully with no warnings"
-       (query_string "CREATE TEMPORARY TABLE a (x integer);"))
+       (query_string "CREATE TEMPORARY TABLE a (x integer);")
+       (commands_complete (((tag "CREATE TABLE") (rows ())))))
       ("Query executed successfully with no warnings"
-       (query_string " INSERT INTO a VALUES (1), (2) "))
+       (query_string " INSERT INTO a VALUES (1), (2) ")
+       (commands_complete (((tag INSERT) (rows (2))))))
       |}];
     let%bind () = query "COPY a FROM STDIN; SELECT * FROM a" in
     (* Note that COPY IN fails with an error since we have to send the server a message
@@ -327,11 +357,12 @@ let%expect_test "COPYIN is gracefully handled without terminating connection" =
       {|
       ("Server reported error "
        (error
-        ("Postgres Server Error"
-         ((Code 57014)
-          (Message
-           "COPY from stdin failed: Command ignored: COPY FROM STDIN is not appropriate for [Postgres_async.simple_query]")
-          (Where "COPY a, line 1: \"\"")))))
+        ((query "COPY a FROM STDIN; SELECT * FROM a")
+         ("Postgres Server Error"
+          ((Code 57014)
+           (Message
+            "COPY from stdin failed: Command ignored: COPY FROM STDIN is not appropriate for [Postgres_async.simple_query]")
+           (Where "COPY a, line 1: \"\""))))))
       |}];
     let%bind () = query "SELECT * FROM a" in
     [%expect
@@ -339,7 +370,8 @@ let%expect_test "COPYIN is gracefully handled without terminating connection" =
       ((1))
       ((2))
       ("Query executed successfully with no warnings"
-       (query_string "SELECT * FROM a"))
+       (query_string "SELECT * FROM a")
+       (commands_complete (((tag SELECT) (rows (2))))))
       |}];
     return ())
 ;;
@@ -352,9 +384,11 @@ let%expect_test "COPYIN is gracefully handled in a chained statement" =
     [%expect
       {|
       ("Query executed successfully with no warnings"
-       (query_string "CREATE TEMPORARY TABLE a (x integer);"))
+       (query_string "CREATE TEMPORARY TABLE a (x integer);")
+       (commands_complete (((tag "CREATE TABLE") (rows ())))))
       ("Query executed successfully with no warnings"
-       (query_string " INSERT INTO a VALUES (1), (2) "))
+       (query_string " INSERT INTO a VALUES (1), (2) ")
+       (commands_complete (((tag INSERT) (rows (2))))))
       |}];
     (* Should only return an error message since the error at the first statement
        prevents the SELECT from running*)
@@ -363,11 +397,12 @@ let%expect_test "COPYIN is gracefully handled in a chained statement" =
       {|
       ("Server reported error "
        (error
-        ("Postgres Server Error"
-         ((Code 57014)
-          (Message
-           "COPY from stdin failed: Command ignored: COPY FROM STDIN is not appropriate for [Postgres_async.simple_query]")
-          (Where "COPY a, line 1: \"\"")))))
+        ((query "COPY a FROM STDIN; SELECT * FROM a")
+         ("Postgres Server Error"
+          ((Code 57014)
+           (Message
+            "COPY from stdin failed: Command ignored: COPY FROM STDIN is not appropriate for [Postgres_async.simple_query]")
+           (Where "COPY a, line 1: \"\""))))))
       |}];
     (* Should return both the results of the SELECT and an error message *)
     let%bind () = query "SELECT * FROM a; COPY a FROM STDIN;" in
@@ -377,11 +412,12 @@ let%expect_test "COPYIN is gracefully handled in a chained statement" =
       ((2))
       ("Server reported error "
        (error
-        ("Postgres Server Error"
-         ((Code 57014)
-          (Message
-           "COPY from stdin failed: Command ignored: COPY FROM STDIN is not appropriate for [Postgres_async.simple_query]")
-          (Where "COPY a, line 1: \"\"")))))
+        ((query "SELECT * FROM a; COPY a FROM STDIN;")
+         ("Postgres Server Error"
+          ((Code 57014)
+           (Message
+            "COPY from stdin failed: Command ignored: COPY FROM STDIN is not appropriate for [Postgres_async.simple_query]")
+           (Where "COPY a, line 1: \"\""))))))
       |}];
     let%bind () = query "SELECT * FROM a" in
     [%expect
@@ -389,7 +425,8 @@ let%expect_test "COPYIN is gracefully handled in a chained statement" =
       ((1))
       ((2))
       ("Query executed successfully with no warnings"
-       (query_string "SELECT * FROM a"))
+       (query_string "SELECT * FROM a")
+       (commands_complete (((tag SELECT) (rows (2))))))
       |}];
     return ())
 ;;
@@ -402,15 +439,18 @@ let%expect_test "COPYOUT is gracefully handled without terminating connection" =
     [%expect
       {|
       ("Query executed successfully with no warnings"
-       (query_string "CREATE TEMPORARY TABLE a (x integer);"))
+       (query_string "CREATE TEMPORARY TABLE a (x integer);")
+       (commands_complete (((tag "CREATE TABLE") (rows ())))))
       ("Query executed successfully with no warnings"
-       (query_string " INSERT INTO a VALUES (1), (2) "))
+       (query_string " INSERT INTO a VALUES (1), (2) ")
+       (commands_complete (((tag INSERT) (rows (2))))))
       |}];
     let%bind () = query "COPY a TO STDOUT" in
     [%expect
       {|
       ("Query executed successfully with warnings"
        (query_string "COPY a TO STDOUT")
+       (commands_complete (((tag COPY) (rows (2)))))
        (warnings
         ("Command ignored: COPY TO STDOUT is not appropriate for [Postgres_async.simple_query]")))
       |}];
@@ -420,7 +460,8 @@ let%expect_test "COPYOUT is gracefully handled without terminating connection" =
       ((1))
       ((2))
       ("Query executed successfully with no warnings"
-       (query_string "SELECT * FROM a"))
+       (query_string "SELECT * FROM a")
+       (commands_complete (((tag SELECT) (rows (2))))))
       |}];
     return ())
 ;;
@@ -433,9 +474,11 @@ let%expect_test "COPY OUT is gracefully handled in a chained statement" =
     [%expect
       {|
       ("Query executed successfully with no warnings"
-       (query_string "CREATE TEMPORARY TABLE a (x integer);"))
+       (query_string "CREATE TEMPORARY TABLE a (x integer);")
+       (commands_complete (((tag "CREATE TABLE") (rows ())))))
       ("Query executed successfully with no warnings"
-       (query_string " INSERT INTO a VALUES (1), (2) "))
+       (query_string " INSERT INTO a VALUES (1), (2) ")
+       (commands_complete (((tag INSERT) (rows (2))))))
       |}];
     (* Should still run the full statement since the client-side prevents COPY OUT,
        not the server *)
@@ -446,6 +489,7 @@ let%expect_test "COPY OUT is gracefully handled in a chained statement" =
       ((2))
       ("Query executed successfully with warnings"
        (query_string "COPY a TO STDOUT; SELECT * FROM a")
+       (commands_complete (((tag COPY) (rows (2))) ((tag SELECT) (rows (2)))))
        (warnings
         ("Command ignored: COPY TO STDOUT is not appropriate for [Postgres_async.simple_query]")))
       |}];
@@ -456,6 +500,7 @@ let%expect_test "COPY OUT is gracefully handled in a chained statement" =
       ((2))
       ("Query executed successfully with warnings"
        (query_string "SELECT * FROM a; COPY a TO STDOUT;")
+       (commands_complete (((tag SELECT) (rows (2))) ((tag COPY) (rows (2)))))
        (warnings
         ("Command ignored: COPY TO STDOUT is not appropriate for [Postgres_async.simple_query]")))
       |}];
@@ -465,7 +510,8 @@ let%expect_test "COPY OUT is gracefully handled in a chained statement" =
       ((1))
       ((2))
       ("Query executed successfully with no warnings"
-       (query_string "SELECT * FROM a"))
+       (query_string "SELECT * FROM a")
+       (commands_complete (((tag SELECT) (rows (2))))))
       |}];
     return ())
 ;;
@@ -488,11 +534,17 @@ let%expect_test "Chained SELECTs work across multiple tables" =
       {|
       ("Query executed successfully with no warnings"
        (query_string
-        "CREATE TEMPORARY TABLE a (x integer); CREATE TEMPORARY TABLE b (y text); CREATE TEMPORARY TABLE c (z boolean)"))
+        "CREATE TEMPORARY TABLE a (x integer); CREATE TEMPORARY TABLE b (y text); CREATE TEMPORARY TABLE c (z boolean)")
+       (commands_complete
+        (((tag "CREATE TABLE") (rows ())) ((tag "CREATE TABLE") (rows ()))
+         ((tag "CREATE TABLE") (rows ())))))
       ("Query executed successfully with no warnings"
        (query_string
          "INSERT INTO a VALUES (1), (2); INSERT INTO b VALUES ('foo'), ('bar');\
-        \n         INSERT INTO c VALUES (true), (false);"))
+        \n         INSERT INTO c VALUES (true), (false);")
+       (commands_complete
+        (((tag INSERT) (rows (2))) ((tag INSERT) (rows (2)))
+         ((tag INSERT) (rows (2))))))
       |}];
     let%bind () = query "SELECT * FROM a; SELECT * FROM b order by y; SELECT * FROM C;" in
     [%expect
@@ -505,7 +557,10 @@ let%expect_test "Chained SELECTs work across multiple tables" =
       ((f))
       ("Query executed successfully with no warnings"
        (query_string
-        "SELECT * FROM a; SELECT * FROM b order by y; SELECT * FROM C;"))
+        "SELECT * FROM a; SELECT * FROM b order by y; SELECT * FROM C;")
+       (commands_complete
+        (((tag SELECT) (rows (2))) ((tag SELECT) (rows (2)))
+         ((tag SELECT) (rows (2))))))
       |}];
     return ())
 ;;
@@ -528,11 +583,18 @@ let%expect_test "COPY OUT generates warnings but doesn't prevent query execution
       {|
       ("Query executed successfully with no warnings"
        (query_string
-        "CREATE TEMPORARY TABLE a (x integer); CREATE TEMPORARY TABLE b (y text); CREATE TEMPORARY TABLE c (z boolean)"))
+        "CREATE TEMPORARY TABLE a (x integer); CREATE TEMPORARY TABLE b (y text); CREATE TEMPORARY TABLE c (z boolean)")
+       (commands_complete
+        (((tag "CREATE TABLE") (rows ())) ((tag "CREATE TABLE") (rows ()))
+         ((tag "CREATE TABLE") (rows ())))))
       ("Query executed successfully with warnings"
        (query_string
          "INSERT INTO a VALUES (1), (2); INSERT INTO b VALUES ('foo'), ('bar');\
         \n         INSERT INTO c VALUES (true), (false); COPY a TO STDOUT; INSERT INTO a VALUES (3)")
+       (commands_complete
+        (((tag INSERT) (rows (2))) ((tag INSERT) (rows (2)))
+         ((tag INSERT) (rows (2))) ((tag COPY) (rows (2)))
+         ((tag INSERT) (rows (1)))))
        (warnings
         ("Command ignored: COPY TO STDOUT is not appropriate for [Postgres_async.simple_query]")))
       |}];
@@ -543,7 +605,8 @@ let%expect_test "COPY OUT generates warnings but doesn't prevent query execution
       ((2))
       ((3))
       ("Query executed successfully with no warnings"
-       (query_string "SELECT * FROM a"))
+       (query_string "SELECT * FROM a")
+       (commands_complete (((tag SELECT) (rows (3))))))
       |}];
     return ())
 ;;
@@ -561,7 +624,8 @@ let%expect_test "Exception handling in handle_row" =
     | Error (_ : Error.t) ->
       print_endline "Got exn from simple_query";
       Postgres_async.status postgres |> [%sexp_of: Postgres_async.state] |> print_s;
-      [%expect {|
+      [%expect
+        {|
         Got exn from simple_query
         Open
         |}];
@@ -584,7 +648,8 @@ let%expect_test "Exception handling in handle_column" =
     | Error (_ : Error.t) ->
       print_endline "Got exn from simple_query";
       Postgres_async.status postgres |> [%sexp_of: Postgres_async.state] |> print_s;
-      [%expect {|
+      [%expect
+        {|
         Got exn from simple_query
         Open
         |}];
@@ -618,6 +683,7 @@ let%expect_test "handle_column" =
         query_string
       >>| Postgres_async.Private.Simple_query_result.to_or_pgasync_error
       >>| Postgres_async.Or_pgasync_error.to_or_error
+      >>| Or_error.ignore_m
       >>| Or_error.ok_exn
     in
     let%bind () =
@@ -674,19 +740,22 @@ let%expect_test "execute_simple" =
     [%expect
       {|
       ("Query executed successfully with no warnings"
-       (query_string "CREATE TEMPORARY TABLE t (x int, y int)"))
+       (query_string "CREATE TEMPORARY TABLE t (x int, y int)")
+       (commands_complete (((tag "CREATE TABLE") (rows ())))))
       |}];
     let%bind () = exec "ALTER TABLE t ADD COLUMN z int" in
     [%expect
       {|
       ("Query executed successfully with no warnings"
-       (query_string "ALTER TABLE t ADD COLUMN z int"))
+       (query_string "ALTER TABLE t ADD COLUMN z int")
+       (commands_complete (((tag "ALTER TABLE") (rows ())))))
       |}];
     let%bind () = exec "INSERT INTO t (x, y, z) VALUES (1,2,3)" in
     [%expect
       {|
       ("Query executed successfully with no warnings"
-       (query_string "INSERT INTO t (x, y, z) VALUES (1,2,3)"))
+       (query_string "INSERT INTO t (x, y, z) VALUES (1,2,3)")
+       (commands_complete (((tag INSERT) (rows (1))))))
       |}];
     (* Multiple queries, all of which return no rows *)
     let%bind () =
@@ -701,7 +770,10 @@ let%expect_test "execute_simple" =
        (query_string
          " INSERT INTO t (x, y, z) VALUES (10,20,30);\
         \n           CREATE TEMPORARY TABLE u (a int);\
-        \n           ALTER TABLE u ADD COLUMN b INT; "))
+        \n           ALTER TABLE u ADD COLUMN b INT; ")
+       (commands_complete
+        (((tag INSERT) (rows (1))) ((tag "CREATE TABLE") (rows ()))
+         ((tag "ALTER TABLE") (rows ())))))
       |}];
     (* Run a query that returns rows, check that it fails *)
     let%bind () = exec "SELECT x,y,z FROM t" in
@@ -728,8 +800,8 @@ let%expect_test "execute_simple" =
     let%bind () = exec "DROP TABLE v" in
     [%expect
       {|
-      ("Query executed successfully with no warnings"
-       (query_string "DROP TABLE v"))
+      ("Query executed successfully with no warnings" (query_string "DROP TABLE v")
+       (commands_complete (((tag "DROP TABLE") (rows ())))))
       |}];
     return ())
 ;;

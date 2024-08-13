@@ -4,6 +4,7 @@ open Async
 module type S = sig
   type column_metadata
   type ssl_mode
+  type command_complete
 
   (** In order to provide an [Expert] interface that uses [Pgasync_error.t] to represent
       its errors, alongside a normal interface that just uses Core's [Error.t], the
@@ -91,13 +92,13 @@ module type S = sig
     -> ?handle_columns:(column_metadata array -> unit)
     -> string
     -> handle_row:(column_names:string array -> values:string option array -> unit)
-    -> (unit, error) Result.t Deferred.t
+    -> (command_complete, error) Result.t Deferred.t
 
   val query_expect_no_data
     :  t
     -> ?parameters:string option array
     -> string
-    -> (unit, error) Result.t Deferred.t
+    -> (command_complete, error) Result.t Deferred.t
 
   type 'a feed_data_result =
     | Abort of { reason : string }
@@ -110,7 +111,7 @@ module type S = sig
     -> ?parameters:string option array
     -> string
     -> feed_data:(unit -> string feed_data_result)
-    -> (unit, error) Result.t Deferred.t
+    -> (command_complete, error) Result.t Deferred.t
 
   (** Note that [table_name] and [column_names] must be escaped before calling
       [copy_in_rows]. *)
@@ -120,7 +121,7 @@ module type S = sig
     -> table_name:string
     -> column_names:string list
     -> feed_data:(unit -> string option array feed_data_result)
-    -> (unit, error) Result.t Deferred.t
+    -> (command_complete, error) Result.t Deferred.t
 
   (** [listen_to_notifications] executes a query to subscribe you to notifications on
       [channel] (i.e., "LISTEN $channel") and stores [f] inside [t], calling it when the
@@ -152,5 +153,5 @@ module type S = sig
     :  t
     -> channel:string
     -> f:(pid:Pid.t -> payload:string -> unit)
-    -> (unit, error) Result.t Deferred.t
+    -> (command_complete, error) Result.t Deferred.t
 end

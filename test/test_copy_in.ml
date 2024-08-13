@@ -28,7 +28,7 @@ let print_table postgres table =
       postgres
       (sprintf "SELECT * FROM %s ORDER BY y" table)
       ~handle_row:(fun ~column_names:_ ~values ->
-      print_s [%sexp (values : string option array)])
+        print_s [%sexp (values : string option array)])
   in
   Or_error.ok_exn result;
   return ()
@@ -51,14 +51,15 @@ let%expect_test "copy_in_rows" =
         ~table_name:"x"
         ~column_names:[ "z"; "y" ]
         ~feed_data:(fun () ->
-        match Queue.dequeue rows with
-        | None -> Finished
-        | Some c -> Data c)
+          match Queue.dequeue rows with
+          | None -> Finished
+          | Some c -> Data c)
     in
     Or_error.ok_exn result;
     [%expect {| |}];
     let%bind () = print_table postgres "x" in
-    [%expect {|
+    [%expect
+      {|
       ((1) (one))
       ((2) ())
       ((3) (three))
@@ -86,14 +87,15 @@ let%expect_test "copy_in_rows, schema" =
         ~table_name:{|"test.table"|}
         ~column_names:[ "z"; "y" ]
         ~feed_data:(fun () ->
-        match Queue.dequeue rows with
-        | None -> Finished
-        | Some c -> Data c)
+          match Queue.dequeue rows with
+          | None -> Finished
+          | Some c -> Data c)
     in
     Or_error.ok_exn result;
     [%expect {| |}];
     let%bind () = print_table postgres {|pg_temp."test.table"|} in
-    [%expect {|
+    [%expect
+      {|
       ((1) (one))
       ((2) ())
       ((3) (three))
@@ -131,9 +133,9 @@ let%expect_test "copy_in_rows: nasty characters" =
         ~table_name:"x"
         ~column_names:[ "y"; "z"; "w" ]
         ~feed_data:(fun () ->
-        match Queue.dequeue rows with
-        | None -> Finished
-        | Some c -> Data c)
+          match Queue.dequeue rows with
+          | None -> Finished
+          | Some c -> Data c)
     in
     Or_error.ok_exn result;
     [%expect {| |}];
@@ -185,11 +187,11 @@ let%expect_test "copy_in_rows: nasty column names" =
         ~column_names:
           [ "k"; {|"y space"|}; {|"z""quote"|}; "year"; "lowercase1"; {|"UPPERCASE2"|} ]
         ~feed_data:(fun () ->
-        match !sent_row with
-        | true -> Finished
-        | false ->
-          sent_row := true;
-          Data [| Some "1"; Some "A"; Some "B"; Some "C"; Some "D"; Some "E" |])
+          match !sent_row with
+          | true -> Finished
+          | false ->
+            sent_row := true;
+            Data [| Some "1"; Some "A"; Some "B"; Some "C"; Some "D"; Some "E" |])
     in
     Or_error.ok_exn result;
     [%expect {| |}];
@@ -198,8 +200,8 @@ let%expect_test "copy_in_rows: nasty column names" =
         postgres
         {| SELECT * FROM "table-name " ORDER BY k |}
         ~handle_row:(fun ~column_names ~values ->
-        Array.iter (Array.zip_exn column_names values) ~f:(fun (k, v) ->
-          print_s [%sexp (k : string), (v : string option)]))
+          Array.iter (Array.zip_exn column_names values) ~f:(fun (k, v) ->
+            print_s [%sexp (k : string), (v : string option)]))
     in
     Or_error.ok_exn result;
     [%expect
@@ -227,16 +229,16 @@ let%expect_test "copy_in_rows: lots of data" =
         ~table_name:"x"
         ~column_names:[ "y"; "z" ]
         ~feed_data:(fun () ->
-        match !counter >= 8192 with
-        | true -> Finished
-        | false ->
-          (match !counter / 256 < !sleeps with
-           | true ->
-             incr sleeps;
-             Wait ((force Utils.do_an_epoll) ())
-           | false ->
-             incr counter;
-             Data [| Some (Int.to_string !counter); Some one_kb |]))
+          match !counter >= 8192 with
+          | true -> Finished
+          | false ->
+            (match !counter / 256 < !sleeps with
+             | true ->
+               incr sleeps;
+               Wait ((force Utils.do_an_epoll) ())
+             | false ->
+               incr counter;
+               Data [| Some (Int.to_string !counter); Some one_kb |]))
     in
     Or_error.ok_exn result;
     [%expect {| |}];
@@ -245,8 +247,8 @@ let%expect_test "copy_in_rows: lots of data" =
         postgres
         {| SELECT COUNT(*), MIN(y), MAX(y), SUM(y), MIN(LENGTH(z)) FROM x |}
         ~handle_row:(fun ~column_names:_ ~values ->
-        let values = Array.map ~f:(fun x -> Option.value_exn x) values in
-        print_s [%sexp (values : string array)])
+          let values = Array.map ~f:(fun x -> Option.value_exn x) values in
+          print_s [%sexp (values : string array)])
     in
     Or_error.ok_exn result;
     [%expect {| (8192 1 8192 33558528 1024) |}];
@@ -272,7 +274,8 @@ let%expect_test "raw: weird chunking" =
     Or_error.ok_exn result;
     [%expect {| |}];
     let%bind () = print_table postgres "x" in
-    [%expect {|
+    [%expect
+      {|
       ((1) (one))
       ((2) (two))
       |}];
@@ -302,7 +305,7 @@ let%expect_test "aborting" =
        let err = Utils.delete_unstable_bits_of_error [%sexp (err : Error.t)] in
        print_s err);
     (* 57014: query_cancelled. *)
-    [%expect {| ((Code 57014)) |}];
+    [%expect {| ((query "COPY x (y, z) FROM STDIN") ((Code 57014))) |}];
     let%bind () = print_table postgres "x" in
     [%expect {| |}];
     return ())
@@ -326,9 +329,9 @@ let%expect_test "copy_in_rows with schema prefix" =
         ~table_name:"my_schema.x"
         ~column_names:[ "y" ]
         ~feed_data:(fun () ->
-        match Queue.dequeue rows with
-        | None -> Finished
-        | Some c -> Data c)
+          match Queue.dequeue rows with
+          | None -> Finished
+          | Some c -> Data c)
     in
     Or_error.ok_exn result;
     [%expect {| |}];
@@ -337,10 +340,11 @@ let%expect_test "copy_in_rows with schema prefix" =
         postgres
         "SELECT * FROM my_schema.x ORDER BY y"
         ~handle_row:(fun ~column_names:_ ~values ->
-        print_s [%sexp (values : string option array)])
+          print_s [%sexp (values : string option array)])
       >>| Or_error.ok_exn
     in
-    [%expect {|
+    [%expect
+      {|
       ((1))
       ((2))
       |}];

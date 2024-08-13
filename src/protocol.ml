@@ -52,8 +52,14 @@ module Shared = struct
     Iobuf.Fill.char iobuf '\x00'
   ;;
 
-  let int16_min = -32768
-  let int16_max = 32767
+  (* Type int16 could be used as both unsigned and signed, depending on the context (See
+     pqPutInt/pgGetInt in the interfaces/libpq/fe-misc.c).
+
+     For example, data type size in RowDescription could be negative, but parameter count
+     in Bind message could only be positive, and so it's maximum value is 65535. Our
+     implementation currently only needs unsigned int16 values *)
+  let uint16_min = 0
+  let uint16_max = 65535
 
   let int32_min =
     match Word_size.word_size with
@@ -77,10 +83,10 @@ module Shared = struct
       assert (String.equal (Int.to_string int32_max) "1073741823")
   ;;
 
-  let[@inline always] fill_int16_be iobuf value =
-    match int16_min <= value && value <= int16_max with
-    | true -> Iobuf.Fill.int16_be_trunc iobuf value
-    | false -> failwithf "int16 out of range: %i" value ()
+  let[@inline always] fill_uint16_be iobuf value =
+    match uint16_min <= value && value <= uint16_max with
+    | true -> Iobuf.Fill.uint16_be_trunc iobuf value
+    | false -> failwithf "uint16 out of range: %i" value ()
   ;;
 
   let[@inline always] fill_int32_be iobuf value =
@@ -227,9 +233,9 @@ module Frontend = struct
     let escape_option_space option =
       String.to_list option
       |> List.concat_map ~f:(fun char ->
-           match char with
-           | ' ' | '\\' -> [ '\\'; char ]
-           | (_ : Char.t) -> [ char ])
+        match char with
+        | ' ' | '\\' -> [ '\\'; char ]
+        | (_ : Char.t) -> [ char ])
       |> String.of_char_list
     ;;
 
@@ -248,19 +254,19 @@ module Frontend = struct
       + String.length database
       + 1
       + (match replication with
-         | Some replication -> 11 + 1 + String.length replication + 1
-         | None -> 0)
+        | Some replication -> 11 + 1 + String.length replication + 1
+        | None -> 0)
       + (match List.is_empty options with
-         | true -> 0
-         | false ->
-           7
-           + 1
-           + List.sum
-               (module Int)
-               options
-               ~f:(fun value ->
-                 let escaped_value = escape_option_space value in
-                 1 + String.length escaped_value))
+        | true -> 0
+        | false ->
+          7
+          + 1
+          + List.sum
+              (module Int)
+              options
+              ~f:(fun value ->
+                let escaped_value = escape_option_space value in
+                1 + String.length escaped_value))
       (* end of list: *)
       + List.sum
           (module Int)
@@ -460,7 +466,7 @@ module Frontend = struct
       (* all parameters are text: *)
       Iobuf.Fill.int16_be_trunc iobuf 0;
       let num_parameters = Array.length t.parameters in
-      Shared.fill_int16_be iobuf num_parameters;
+      Shared.fill_uint16_be iobuf num_parameters;
       for idx = 0 to num_parameters - 1 do
         match t.parameters.(idx) with
         | None -> Shared.fill_int32_be iobuf (-1)
@@ -832,8 +838,8 @@ module Backend = struct
       + String.length error_code
       + 1
       + List.fold all_fields ~init:0 ~f:(fun acc ((_ : Error_or_notice_field.t), data) ->
-          (* 1 for code, 1 for null term *)
-          1 + String.length data + 1 + acc)
+        (* 1 for code, 1 for null term *)
+        1 + String.length data + 1 + acc)
       (* zero terminates *)
       + 1
     ;;
@@ -959,7 +965,7 @@ module Backend = struct
     let message_type_char = Some 't'
 
     let consume_exn iobuf =
-      let num_parameters = Iobuf.Consume.int16_be iobuf in
+      let num_parameters = Iobuf.Consume.uint16_be iobuf in
       Array.init_ascending num_parameters ~f:(fun () -> Iobuf.Consume.int32_be iobuf)
     ;;
 
@@ -977,7 +983,7 @@ module Backend = struct
     ;;
 
     let fill t iobuf =
-      Shared.fill_int16_be iobuf (Array.length t);
+      Shared.fill_uint16_be iobuf (Array.length t);
       Array.iter t ~f:(fun i -> Shared.fill_int32_be iobuf i)
     ;;
   end
@@ -1144,7 +1150,7 @@ module Backend = struct
     type t = Column_metadata.t array
 
     let consume_exn iobuf =
-      let num_fields = Iobuf.Consume.int16_be iobuf in
+      let num_fields = Iobuf.Consume.uint16_be iobuf in
       Array.init_ascending num_fields ~f:(fun () ->
         let name = Shared.consume_cstring_exn iobuf in
         let skip =
@@ -1182,7 +1188,7 @@ module Backend = struct
     type t = string option array
 
     let consume_exn iobuf =
-      let num_fields = Iobuf.Consume.int16_be iobuf in
+      let num_fields = Iobuf.Consume.uint16_be iobuf in
       Array.init_ascending num_fields ~f:(fun () ->
         match Iobuf.Consume.int32_be iobuf with
         | -1 -> None
@@ -1214,7 +1220,7 @@ module Backend = struct
 
     let fill t iobuf =
       let num_parameters = Array.length t in
-      Shared.fill_int16_be iobuf num_parameters;
+      Shared.fill_uint16_be iobuf num_parameters;
       for idx = 0 to num_parameters - 1 do
         match t.(idx) with
         | None -> Shared.fill_int32_be iobuf (-1)
@@ -1241,8 +1247,8 @@ module Backend = struct
   end
 
   module CopyResponse (A : sig
-    val name : string
-  end) : CopyResponse = struct
+      val name : string
+    end) : CopyResponse = struct
     type column =
       { name : string
       ; format : [ `Text | `Binary ]
@@ -1261,7 +1267,7 @@ module Backend = struct
         | 1 -> `Binary
         | i -> failwithf "%s: bad overall format: %i" A.name i ()
       in
-      let num_columns = Iobuf.Consume.int16_be iobuf in
+      let num_columns = Iobuf.Consume.uint16_be iobuf in
       let column_formats =
         Array.init_ascending num_columns ~f:(fun () ->
           match Iobuf.Consume.int16_be iobuf with
@@ -1282,12 +1288,12 @@ module Backend = struct
   end
 
   module CopyInResponse = CopyResponse (struct
-    let name = "CopyInResponse"
-  end)
+      let name = "CopyInResponse"
+    end)
 
   module CopyOutResponse = CopyResponse (struct
-    let name = "CopyOutResponse"
-  end)
+      let name = "CopyOutResponse"
+    end)
 
   module CommandComplete = struct
     type t = string

@@ -231,7 +231,8 @@ let%expect_test "sslmode = Disable skips sslrequest" =
       ~handle_client:(handle_client ~ssl_char:'N')
       ~f:(connect_and_close ~ssl_mode:Disable)
   in
-  [%expect {|
+  [%expect
+    {|
     skipped ssl
     Connected
     |}];

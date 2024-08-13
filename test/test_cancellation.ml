@@ -24,11 +24,11 @@ let%expect_test ("Demonstrate that cancelling running queries is possible" [@tag
       connection
       "select 1 from pg_sleep(100)"
       ~handle_row:(fun ~column_names ~values ->
-      raise_s
-        [%message
-          "Unexpectedly produced rows"
-            (column_names : string array)
-            (values : string option array)])
+        raise_s
+          [%message
+            "Unexpectedly produced rows"
+              (column_names : string array)
+              (values : string option array)])
   in
   let%bind () =
     Deferred.repeat_until_finished () (fun () ->
