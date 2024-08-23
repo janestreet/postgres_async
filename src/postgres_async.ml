@@ -806,6 +806,16 @@ module Expert_with_command_complete = struct
       match Protocol.Backend.NoticeResponse.consume iobuf with
       | Error err -> Error (Pgasync_error.of_error err)
       | Ok { error_code = _; all_fields } ->
+        let all_fields =
+          if am_running_test
+          then
+            (* Make output more stable accross different server versions *)
+            List.filter all_fields ~f:(fun (field, _value) ->
+              not
+                Protocol.Backend.Error_or_notice_field.(
+                  equal field Line || equal field File || equal field Routine))
+          else all_fields
+        in
         [%log.global.info
           "Postgres NoticeResponse"
             ~_:(all_fields : (Protocol.Backend.Error_or_notice_field.t * string) list)];
