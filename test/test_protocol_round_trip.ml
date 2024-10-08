@@ -3,16 +3,16 @@ open Async
 module Protocol = Postgres_async.Private.Protocol
 
 let roundtrip ~write ~read =
-  let reader, pipe_writer = Pipe.create () in
-  let%bind writer, _flushed = Writer.of_pipe (Info.create_s [%message "w"]) pipe_writer in
-  write writer;
-  let closed = Writer.close writer in
-  let%bind contents =
-    Reader.of_pipe (Info.create_s [%message "r"]) reader >>= Reader.contents
+  let%bind `Reader reader_fd, `Writer writer_fd =
+    Unix.pipe (Info.of_string "roundtrip")
   in
-  let iobuf = Iobuf.of_string contents in
-  read iobuf;
-  closed
+  let%map () =
+    let writer = Writer.create writer_fd in
+    Writer.with_close writer ~f:(fun () ->
+      write writer;
+      return ())
+  and contents = Reader.contents (Reader.create reader_fd) in
+  read (Iobuf.of_string contents)
 ;;
 
 let read_message iobuf ~read_message_type_char ~read_payload =
@@ -29,89 +29,73 @@ let read_message iobuf ~read_message_type_char ~read_payload =
   read_payload ~payload_length iobuf
 ;;
 
-let test_startup ?replication ?(options = []) ?(runtime_parameters = String.Map.empty) () =
-  let write writer =
-    Protocol.Frontend.Writer.startup_message
-      writer
-      { user = "test-user"
-      ; database = "testdb"
-      ; options
-      ; runtime_parameters
-      ; replication
-      }
+let test_startup ?replication ?options runtime_parameters =
+  let startup_message =
+    Protocol.Frontend.StartupMessage.create_exn
+      ()
+      ~user:"test-user"
+      ~database:"testdb"
+      ?options
+      ?replication
+      ~runtime_parameters:(String.Map.of_alist_exn runtime_parameters)
   in
+  let write writer = Protocol.Frontend.Writer.startup_message writer startup_message in
   let read_payload ~payload_length:_ iobuf =
-    let ({ user; database; options; runtime_parameters; replication }
-          : Protocol.Frontend.StartupMessage.t)
-      =
-      Protocol.Frontend.StartupMessage.consume iobuf |> Or_error.ok_exn
-    in
-    print_s
-      [%message
-        (user : string)
-          (database : string)
-          (replication : string option)
-          (options : string list)
-          (runtime_parameters : string String.Map.t)]
+    let read = Protocol.Frontend.StartupMessage.consume iobuf |> ok_exn in
+    [%test_result: Protocol.Frontend.StartupMessage.t] read ~expect:startup_message;
+    print_s [%sexp (read : Protocol.Frontend.StartupMessage.t)]
   in
   let read = read_message ~read_message_type_char:false ~read_payload in
   roundtrip ~write ~read
 ;;
 
 let%expect_test "Simple Startup" =
-  let%bind () = test_startup () in
+  let%bind () = test_startup [] in
   [%expect
     {|
     (message_char ())
     (length 40)
-    ((user test-user) (database testdb) (replication ()) (options ())
-     (runtime_parameters ()))
+    ((database testdb) (user test-user))
     |}];
   Deferred.unit
 ;;
 
 let%expect_test "Replication Startup" =
-  let%bind () = test_startup ~replication:"database" () in
+  let%bind () = test_startup ~replication:"database" [] in
   [%expect
     {|
     (message_char ())
     (length 61)
-    ((user test-user) (database testdb) (replication (database)) (options ())
-     (runtime_parameters ()))
+    ((database testdb) (replication database) (user test-user))
     |}];
   Deferred.unit
 ;;
 
 let%expect_test "Startup with Params" =
-  let%bind () =
-    test_startup
-      ~runtime_parameters:
-        (String.Map.of_alist_exn [ "client_encoding", "UTF8"; "DateStyle", "ISO,MDY" ])
-      ()
-  in
+  let%bind () = test_startup [ "client_encoding", "UTF8"; "DateStyle", "ISO,MDY" ] in
   [%expect
     {|
     (message_char ())
     (length 79)
-    ((user test-user) (database testdb) (replication ()) (options ())
-     (runtime_parameters ((client_encoding UTF8) (datestyle ISO,MDY))))
+    ((DateStyle ISO,MDY) (client_encoding UTF8) (database testdb)
+     (user test-user))
     |}];
   Deferred.unit
 ;;
 
 (* Note : options is deprecated in favor of runtime parameters according
    to postgres docs *)
+
 let%expect_test "Startup with Options" =
   let%bind () =
-    test_startup ~options:[ "client_encoding=UTF8"; "statement_timeout=3000" ] ()
+    test_startup [] ~options:[ "client_encoding=UTF8"; "statement_timeout=3000" ]
   in
   [%expect
     {|
     (message_char ())
     (length 92)
-    ((user test-user) (database testdb) (replication ())
-     (options (client_encoding=UTF8 statement_timeout=3000))
-     (runtime_parameters ()))
+    ((database testdb) (options "client_encoding=UTF8 statement_timeout=3000")
+     (user test-user))
     |}];
   Deferred.unit
 ;;
@@ -119,16 +103,16 @@ let%expect_test "Startup with Options" =
 let%expect_test "Startup with Options with space" =
   let%bind () =
     test_startup
+      []
       ~options:[ "application_name='More Spaces Please'"; "statement_timeout=3000" ]
-      ()
   in
   [%expect
     {|
     (message_char ())
     (length 111)
-    ((user test-user) (database testdb) (replication ())
-     (options ("application_name='More Spaces Please'" statement_timeout=3000))
-     (runtime_parameters ()))
+    ((database testdb)
+     (options "application_name='More\\ Spaces\\ Please' statement_timeout=3000")
+     (user test-user))
     |}];
   Deferred.unit
 ;;
@@ -136,21 +120,20 @@ let%expect_test "Startup with Options with space" =
 let%expect_test "Startup with Options with multi space and backslash" =
   let%bind () =
     test_startup
+      []
       ~options:
         [ "--application_name='My \\very complicated   a\\p\\p name'"
         ; "--statement_timeout=3000"
         ]
-      ()
   in
   [%expect
     {|
     (message_char ())
     (length 137)
-    ((user test-user) (database testdb) (replication ())
+    ((database testdb)
      (options
-      ("--application_name='My \\very complicated   a\\p\\p name'"
-       --statement_timeout=3000))
-     (runtime_parameters ()))
+      "--application_name='My\\ \\\\very\\ complicated\\ \\ \\ a\\\\p\\\\p\\ name' --statement_timeout=3000")
+     (user test-user))
     |}];
   Deferred.unit
 ;;

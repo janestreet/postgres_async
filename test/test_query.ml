@@ -12,30 +12,130 @@ let with_connection_exn =
   fun func -> Harness.with_connection_exn (force harness) ~database func
 ;;
 
+let print_cut_after_first ppf r =
+  if not !r then Format.pp_print_space ppf ();
+  r := false
+;;
+
+let row_handler ~show_column_names =
+  stage (fun row_handle ->
+    Format.printf "@[<h>(";
+    let first = ref true in
+    Postgres_async.Row_handle.foldi row_handle ~init:() ~f:(fun ~column ~value () ->
+      let value =
+        match value with
+        | None -> None
+        | Some iobuf -> Some (Iobuf.Peek.To_string.subo iobuf)
+      in
+      let sexp =
+        if show_column_names
+        then
+          [%sexp
+            (Postgres_async.Column_metadata.name column : string), (value : string option)]
+        else [%sexp (value : string option)]
+      in
+      Format.printf "%a%a" print_cut_after_first first Sexp.pp_hum sexp);
+    Format.printf ")@]@;")
+;;
+
 let query_exn
   postgres
+  ?zero_copy
   ?handle_columns
   ?(show_column_names = false)
   ?parameters
   ?pushback
   str
   =
-  let handle_row ~column_names ~values =
-    match show_column_names with
+  let run ~zero_copy =
+    match zero_copy with
+    | false ->
+      let handle_row ~column_names ~values =
+        match show_column_names with
+        | true ->
+          print_s
+            [%sexp (Array.zip_exn column_names values : (string * string option) array)]
+        | false -> print_s [%sexp (values : string option array)]
+      in
+      Postgres_async.query postgres ?handle_columns ?parameters ?pushback str ~handle_row
+      >>| ok_exn
     | true ->
-      print_s [%sexp (Array.zip_exn column_names values : (string * string option) array)]
-    | false -> print_s [%sexp (values : string option array)]
+      Postgres_async.query_zero_copy
+        postgres
+        ?handle_columns
+        ?parameters
+        ?pushback
+        str
+        ~handle_row:(row_handler ~show_column_names |> unstage)
+      >>| ok_exn
   in
-  let%bind res =
-    Postgres_async.query postgres ?handle_columns ?parameters ?pushback str ~handle_row
-  in
-  Or_error.ok_exn res;
-  return ()
+  match zero_copy with
+  | Some zero_copy -> run ~zero_copy
+  | None ->
+    (match
+       let str = String.strip str in
+       List.exists ~f:(fun prefix -> String.is_prefix str ~prefix) [ "SELECT"; "WITH" ]
+     with
+     | false ->
+       (* For non-read-only commands, choose at random which implementation to use.  *)
+       run ~zero_copy:(Random.bool ())
+     | true ->
+       (* For read-only commands, run twice as an easy way to confirm these interfaces are
+         equivalent. *)
+       let%bind () = run ~zero_copy:false in
+       let output1 = Expect_test_helpers_core.expect_test_output () in
+       let%bind () = run ~zero_copy:true in
+       let output2 = Expect_test_helpers_core.expect_test_output () in
+       [%test_result: Sexp.t list]
+         ~expect:(Sexp.of_string_many output1)
+         (Sexp.of_string_many output2);
+       print_endline output2;
+       return ())
 ;;
 
 let%expect_test "column names and ordering" =
   with_connection_exn (fun postgres ->
     let query_exn = query_exn postgres ~show_column_names:true in
+    let%bind () =
+      query_exn "CREATE TEMPORARY TABLE a ( x timestamp, y integer PRIMARY KEY, z text );"
+    in
+    let%bind () =
+      query_exn
+        {|
+        INSERT INTO a (x, y, z) VALUES
+        ('2000-01-01 00:00:00', 1, 'test string'),
+        ('2000-01-01 00:00:00', 5, E'nasty\nstring\t''\",x'),
+        ('2019-03-14 00:00:00', 10, NULL); |}
+    in
+    let%bind () = query_exn "SELECT * FROM a ORDER BY y" in
+    [%expect
+      {|
+      ((x ("2000-01-01 00:00:00")) (y (1)) (z ("test string")))
+      ((x ("2000-01-01 00:00:00")) (y (5)) (z ( "nasty\
+                                               \nstring\t'\",x")))
+      ((x ("2019-03-14 00:00:00")) (y (10)) (z ()))
+      |}];
+    let%bind () = query_exn "SELECT z, x FROM a ORDER BY y" in
+    [%expect
+      {|
+      ((z ("test string")) (x ("2000-01-01 00:00:00")))
+      ((z ( "nasty\
+           \nstring\t'\",x")) (x ("2000-01-01 00:00:00")))
+      ((z ()) (x ("2019-03-14 00:00:00")))
+      |}];
+    let%bind () = query_exn "SELECT x as moo, y FROM a ORDER BY y" in
+    [%expect
+      {|
+      ((moo ("2000-01-01 00:00:00")) (y (1)))
+      ((moo ("2000-01-01 00:00:00")) (y (5)))
+      ((moo ("2019-03-14 00:00:00")) (y (10)))
+      |}];
+    return ())
+;;
+
+let%expect_test "reading raw iobufs" =
+  with_connection_exn (fun postgres ->
+    let query_exn = query_exn postgres ~zero_copy:true ~show_column_names:true in
     let%bind () =
       query_exn "CREATE TEMPORARY TABLE a ( x timestamp, y integer PRIMARY KEY, z text );"
     in
@@ -87,12 +187,7 @@ let%expect_test "parameters" =
         |}
         ~parameters:[| Some "1"; Some "-5"; None; Some "1000000" |]
     in
-    [%expect
-      {|
-      ((1) (-5))
-      ((-5) ())
-      ((1000000) (1000000))
-      |}];
+    [%expect {| ((1) (-5)) ((-5) ()) ((1000000) (1000000)) |}];
     let%bind () =
       query_exn "SELECT $1::text" ~parameters:[| Some "nasty\nstring\t''\",x" |]
     in
@@ -109,11 +204,7 @@ let%expect_test "parameters" =
         ~parameters:[| Some "5"; Some "five"; Some "10"; None |]
     in
     let%bind () = query_exn "SELECT * FROM c" in
-    [%expect
-      {|
-      ((5) (five))
-      ((10) ())
-      |}];
+    [%expect {| ((5) (five)) ((10) ()) |}];
     let%bind () =
       query_exn
         "UPDATE c SET y = 'ten' WHERE x = $1 RETURNING x, y"
@@ -443,12 +534,7 @@ let%expect_test "query expect no data" =
       |}];
     (* Observe that the values were in fact inserted: *)
     let%bind () = query_exn postgres "SELECT * FROM c ORDER BY x" in
-    [%expect
-      {|
-      ((10))
-      ((20))
-      ((20))
-      |}];
+    [%expect {| ((10)) ((20)) ((20)) |}];
     return ())
 ;;
 
@@ -544,8 +630,7 @@ let%expect_test "the handle_column callback" =
     in
     [%expect
       {|
-      ((oid (23)) (typname (int4)))
-      ((oid (25)) (typname (text)))
+      ((oid (23)) (typname (int4))) ((oid (25)) (typname (text)))
       ((oid (1114)) (typname (timestamp)))
       |}];
     let query_exn =

@@ -77,10 +77,10 @@ let%expect_test "Parse full backend key range" =
   Iobuf.Fill.int32_be_trunc buf pid_sent;
   Iobuf.Fill.int32_be_trunc buf secret_sent;
   Iobuf.flip_lo buf;
-  let { Postgres_async__.Types.pid; secret } =
+  let backend_key_data =
     Postgres_async.Private.Protocol.Backend.BackendKeyData.consume buf |> Or_error.ok_exn
   in
-  print_s [%message (pid : int) (secret : int)];
+  print_s [%sexp (backend_key_data : Postgres_async.Private.Protocol.Types.backend_key)];
   [%expect
     {|
     ((pid_sent 9999) (secret_sent 2147483647))

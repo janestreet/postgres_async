@@ -1,6 +1,7 @@
 (library
  (name postgres_async)
  (public_name postgres_async)
- (libraries async async_ssl async_unix core_kernel.bus core core_kernel.iobuf)
+ (libraries async async_ssl async_unix core_kernel.bus core core_kernel.iobuf
+   postgres_async_protocol)
  (preprocess
   (pps ppx_jane)))
