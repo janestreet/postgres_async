@@ -1,5 +1,6 @@
 (library
  (name postgres_async_protocol)
+ (public_name postgres_async.protocol)
  (libraries async core_kernel.bus core core_kernel.iobuf)
  (preprocess
   (pps ppx_jane)))

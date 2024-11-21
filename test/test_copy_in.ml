@@ -350,3 +350,37 @@ let%expect_test "copy_in_rows with schema prefix" =
       |}];
     return ())
 ;;
+
+let%expect_test "error handling" =
+  with_connection_exn (fun postgres ->
+    let%bind () =
+      create_table postgres "x" [ "y integer primary key"; "z text not null" ]
+    in
+    [%expect {| |}];
+    let%bind result =
+      let count = ref 0 in
+      Postgres_async.copy_in_raw postgres "COPY x (y, z) FROM STDIN" ~feed_data:(fun () ->
+        incr count;
+        (* Some of the error handing happens after we have done waiting for the Wait
+           message, so lets make sure we generate plenty of them and intersperse an error
+           in between *)
+        match !count with
+        | 900 -> Data "not-a-number\ttwo\n"
+        | n ->
+          if n mod 2 = 0
+          then Wait (Scheduler.yield_until_no_jobs_remain ())
+          else if n < 1000
+          then Data (Int.to_string n ^ "\ttrue\n")
+          else Finished)
+    in
+    (match result with
+     | Ok () -> failwith "succeeded!?"
+     | Error err ->
+       let err = Utils.delete_unstable_bits_of_error [%sexp (err : Error.t)] in
+       print_s err);
+    (* 22P02: invalid syntax for integer. *)
+    [%expect {| ((query "COPY x (y, z) FROM STDIN") ((Code 22P02))) |}];
+    let%bind () = print_table postgres "x" in
+    [%expect {| |}];
+    return ())
+;;

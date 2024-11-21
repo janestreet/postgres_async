@@ -469,21 +469,27 @@ module Expert_with_command_complete = struct
       | Connection_closed of Pgasync_error.t
       | Done of 'a
 
-    let can't_read_because_closed =
+    let can't_read_because_closed_and_eof =
       lazy
         (return
            (Connection_closed
               (Pgasync_error.of_string
                  ~error_code:Pgasync_error.Sqlstate.connection_does_not_exist
-                 "can't read: closed or closing")))
+                 "can't read from connection: connection is either closed or closing, \
+                  and no messages available")))
     ;;
 
     let run_reader ?(pushback = no_pushback) t ~handle_message =
       let handle_chunk = Staged.unstage (handle_chunk ~handle_message ~pushback) in
-      match t.state with
-      | Failed { error; _ } -> return (Connection_closed error)
-      | Closed_gracefully | Closing -> force can't_read_because_closed
-      | Open ->
+      let bytes_available = Reader.bytes_available t.reader in
+      (* If there are still bytes available in the reader, we would try to consume them,
+         even if our internal state indicates that the connection is closed. We would
+         never have an excessive amount of data to process, both due to the postgres write
+         behaviour and because of input buffer limits *)
+      match t.state, bytes_available > 0 with
+      | Failed { error; _ }, _ -> return (Connection_closed error)
+      | (Closed_gracefully | Closing), false -> force can't_read_because_closed_and_eof
+      | Open, _ | (Closed_gracefully | Closing), true ->
         (* [t.state] = [Open _] implies [t.reader] is not closed, and so this function will
            not raise. Note further that if the reader is closed _while_ we are reading, it
            does not raise. *)
@@ -492,10 +498,11 @@ module Expert_with_command_complete = struct
            reader will be closed and reads will return Eof. So, after the read
            result is determined, we check [t.state], so that we can give a better
            error message than "unexpected EOF". *)
-        (match t.state with
-         | Failed { error; _ } -> return (Connection_closed error)
-         | Closing | Closed_gracefully -> force can't_read_because_closed
-         | Open ->
+        (match t.state, res with
+         | Failed { error; _ }, _ -> return (Connection_closed error)
+         | (Closing | Closed_gracefully), (`Eof_with_unconsumed_data _ | `Eof) ->
+           force can't_read_because_closed_and_eof
+         | Open, _ | (Closing | Closed_gracefully), `Stopped _ ->
            let res =
              match res with
              | `Stopped s -> s
@@ -1926,7 +1933,20 @@ module Expert_with_command_complete = struct
             (* check for early termination; not necessary for correctness, just nice. *)
             match Deferred.peek response_deferred with
             | None -> loop ()
-            | Some (Connection_closed _ | Done (Error _)) -> return ()
+            | Some (Connection_closed _) -> return ()
+            | Some (Done (Error _)) ->
+              (* "In the event of a backend-detected error during copy-in mode (including
+                 receipt of a CopyFail message), the backend will issue an ErrorResponse
+                 message. If the COPY command was issued via an extended-query message,
+                 the backend will now discard frontend messages until a Sync message is
+                 received, then it will issue ReadyForQuery and return to normal
+                 processing."
+
+                 We issue Sync here and consume ReadyForQuery in the subsequent call to
+                 handle_ready_for_query *)
+              catch_write_errors t ~flush_message:Not_required ~f:(fun writer ->
+                Protocol.Frontend.Writer.sync writer);
+              return ()
             | Some (Done (Ok (_result : Command_complete.t))) ->
               failwith
                 "BUG: response_deferred is (Done (Ok result)), but we never set \
