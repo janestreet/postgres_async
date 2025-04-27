@@ -5,10 +5,10 @@ open! Import
 module StartupMessage : sig
   module Parameter : sig
     module Name : sig
-      (** The currently recognized parameter names. The following descriptions are
-            copied from {{:
-            https://www.postgresql.org/docs/current/protocol-message-formats.html#PROTOCOL-MESSAGE-FORMATS-STARTUPMESSAGE
-            }the PostgreSQL docs}: *)
+      (** The currently recognized parameter names. The following descriptions are copied
+          from
+          {{:https://www.postgresql.org/docs/current/protocol-message-formats.html#PROTOCOL-MESSAGE-FORMATS-STARTUPMESSAGE}
+            the PostgreSQL docs}: *)
 
       (** The database user name to connect as. Required; there is no default. *)
       val user : string
@@ -16,48 +16,48 @@ module StartupMessage : sig
       (** The database to connect to. Defaults to the user name. *)
       val database : string
 
-      (** Command-line arguments for the backend. (This is deprecated in favor of
-            setting individual run-time parameters.) See the [Options] module for an
-            implementation of this. *)
+      (** Command-line arguments for the backend. (This is deprecated in favor of setting
+          individual run-time parameters.) See the [Options] module for an implementation
+          of this. *)
       val options : string
 
-      (** Used to connect in streaming replication mode, where a small set of
-            replication commands can be issued instead of SQL statements. Value can be
-            true, false, or database, and the default is false. See {{:
-            https://www.postgresql.org/docs/13/protocol-replication.html }Section 52.4}
-            for details. *)
+      (** Used to connect in streaming replication mode, where a small set of replication
+          commands can be issued instead of SQL statements. Value can be true, false, or
+          database, and the default is false. See
+          {{:https://www.postgresql.org/docs/13/protocol-replication.html} Section 52.4}
+          for details. *)
       val replication : string
     end
 
     module Options : sig
-      (** Command-line arguments for the backend are delimited by spaces in the value
-            sent to the server. These functions convert between a list of arguments and
-            the equivalent parameter value to send to the server *)
+      (** Command-line arguments for the backend are delimited by spaces in the value sent
+          to the server. These functions convert between a list of arguments and the
+          equivalent parameter value to send to the server *)
 
       val encode : string list -> string
       val decode : string -> string list
     end
   end
 
-  (** Must contain a "user" parameter. Keys may not be empty and no strings may contain
-        a null byte. *)
+  (** Must contain a "user" parameter. Keys may not be empty and no strings may contain a
+      null byte. *)
   type t = private string String.Map.t [@@deriving compare, sexp_of]
 
   val find : t -> string -> string option
 
   (** user is required, all other parameters are optional - they can be accessed via
-        [find] *)
+      [find] *)
   val user : t -> string
 
   (** This replicates postgres' behavior. The database is optional but if the field is
-        missing then postgres will default to user. *)
+      missing then postgres will default to user. *)
   val database_defaulting_to_user : t -> string
 
   (** [options] defaults to the empty list *)
   val options : t -> string list
 
-  (** These settings will be applied during backend start (after parsing the
-        command-line arguments if any) and will act as session defaults. *)
+  (** These settings will be applied during backend start (after parsing the command-line
+      arguments if any) and will act as session defaults. *)
   val runtime_parameters : t -> string String.Map.t
 
   val protocol_extensions : t -> string String.Map.t

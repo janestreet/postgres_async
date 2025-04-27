@@ -71,6 +71,7 @@ module Postgres_field = Postgres_async_protocol.Backend.Error_or_notice_field
 module Sqlstate = struct
   type t = string [@@deriving compare, equal, hash, sexp_of]
 
+  let cardinality_violation = "21000"
   let invalid_authorization_specification = "28000"
   let invalid_password = "28P01"
   let connection_exception = "08000"
@@ -79,6 +80,10 @@ module Sqlstate = struct
   let sqlserver_rejected_establishment_of_sqlconnection = "08004"
   let connection_failure = "08006"
   let protocol_violation = "08P01"
+  let object_not_in_prerequisite_state = "55000"
+  let undefined_object = "42704"
+  let wrong_object_type = "42809"
+  let syntax_error = "42601"
 end
 
 type t =

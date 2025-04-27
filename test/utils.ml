@@ -47,10 +47,10 @@ let pg_backend_pid postgres =
       postgres
       "SELECT pg_backend_pid()"
       ~handle_row:(fun ~column_names:_ ~values ->
-        match values with
-        | [| Some p |] -> Set_once.set_exn backend_pid [%here] p
+        match Iarray.to_array values with
+        | [| Some p |] -> Set_once.set_exn backend_pid p
         | _ -> assert false)
   in
   Or_error.ok_exn result;
-  return (Set_once.get_exn backend_pid [%here])
+  return (Set_once.get_exn backend_pid)
 ;;

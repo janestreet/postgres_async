@@ -20,6 +20,24 @@ module Array = struct
   ;;
 end
 
+module Iarray = struct
+  include Iarray
+
+  (* [init] does not promise to do so in ascending index order. I think nobody would ever
+     imagine changing this, and it would show up in our tests, but it's cheap to be
+     explicit. *)
+  let init_ascending len ~f =
+    match len with
+    | 0 -> Iarray.empty
+    | len ->
+      let res = Array.create ~len (f ()) in
+      for i = 1 to len - 1 do
+        Array.unsafe_set res i (f ())
+      done;
+      Iarray.unsafe_of_array__promise_no_mutation res
+  ;;
+end
+
 type constructor =
   | AuthenticationRequest
   | BackendKeyData
@@ -508,11 +526,11 @@ module CloseComplete = struct
 end
 
 module RowDescription = struct
-  type t = Column_metadata.t array
+  type t = Column_metadata.t iarray
 
   let consume_exn iobuf =
     let num_fields = Iobuf.Consume.uint16_be iobuf in
-    Array.init_ascending num_fields ~f:(fun () ->
+    Iarray.init_ascending num_fields ~f:(fun () ->
       let name = Shared.consume_cstring_exn iobuf in
       let skip =
         (* table *)
@@ -546,11 +564,11 @@ module RowDescription = struct
 end
 
 module DataRow = struct
-  type t = string option array
+  type t = string option iarray
 
-  let consume_exn iobuf =
+  let consume_exn iobuf : t =
     let num_fields = Iobuf.Consume.uint16_be iobuf in
-    Array.init_ascending num_fields ~f:(fun () ->
+    Iarray.init_ascending num_fields ~f:(fun () ->
       match Iobuf.Consume.int32_be iobuf with
       | -1 -> None
       | len -> Some (Iobuf.Consume.stringo iobuf ~len))
@@ -576,14 +594,14 @@ module DataRow = struct
       | Some string -> String.length string
     in
     (* Row size *)
-    2 + Array.sum (module Int) t ~f:element_length
+    2 + Iarray.sum (module Int) t ~f:element_length
   ;;
 
-  let fill t iobuf =
-    let num_parameters = Array.length t in
+  let fill (t : t) iobuf =
+    let num_parameters = Iarray.length t in
     Shared.fill_uint16_be iobuf num_parameters;
     for idx = 0 to num_parameters - 1 do
-      match t.(idx) with
+      match Iarray.get t idx with
       | None -> Shared.fill_int32_be iobuf (-1)
       | Some str ->
         Shared.fill_int32_be iobuf (String.length str);

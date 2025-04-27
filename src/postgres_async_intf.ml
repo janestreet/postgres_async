@@ -21,10 +21,10 @@ module type S = sig
 
       [ssl_mode] defaults to [Ssl_mode.Disable].
 
-      [buffer_age_limit] sets the age limit on the outgoing Writer.t. The default limit
-      is 2m to preserve existing behavior, but you likely want [`Unlimited] to avoid
-      application crashes when the database is loaded---and this may become the default at
-      some point in the future.
+      [buffer_age_limit] sets the age limit on the outgoing Writer.t. The default limit is
+      set to [`Unlimited] to avoid application crashes when the database is loaded.
+      Default age limit on the Writer.t is 2 minutes, and you might want to use that value
+      to preserve the existing behavior.
 
       [buffer_byte_limit] is only used during a COPY---it pauses inserting more rows and
       flushes the entire Writer.t if its buffer contains this many bytes or more. *)
@@ -35,8 +35,9 @@ module type S = sig
     -> ?user:string
     -> ?password:string
     -> ?gss_krb_token:string
-    -> ?buffer_age_limit:Async_unix.Writer.buffer_age_limit
+    -> ?buffer_age_limit:Writer.buffer_age_limit
     -> ?buffer_byte_limit:Byte_units.t
+    -> ?max_message_length:Byte_units.t
     -> database:string
     -> ?replication:string
     -> unit
@@ -45,10 +46,9 @@ module type S = sig
   (** [close] returns an error if there were any problems gracefully tearing down the
       connection. For sure, when it is determined, the connection is gone.
 
-      [try_cancel_statement_before_close] defaults to false. If set to true, [close]
-      will first attempt to cancel any query in progress on [t] before closing the
-      connection, which provides more 'graceful' closing behavior.
-  *)
+      [try_cancel_statement_before_close] defaults to false. If set to true, [close] will
+      first attempt to cancel any query in progress on [t] before closing the connection,
+      which provides more 'graceful' closing behavior. *)
   val close
     :  ?try_cancel_statement_before_close:bool
     -> t
@@ -77,6 +77,7 @@ module type S = sig
     -> ?gss_krb_token:string
     -> ?buffer_age_limit:Async_unix.Writer.buffer_age_limit
     -> ?buffer_byte_limit:Byte_units.t
+    -> ?max_message_length:Byte_units.t
     -> ?try_cancel_statement_before_close:bool
     -> database:string
     -> ?replication:string
@@ -91,13 +92,13 @@ module type S = sig
     t
     -> ?parameters:string option array
     -> ?pushback:(unit -> unit Deferred.t)
-    -> ?handle_columns:(Column_metadata.t array -> unit)
+    -> ?handle_columns:(Column_metadata.t iarray -> unit)
     -> string
     -> handle_row:'handle_row
     -> (command_complete, error) Result.t Deferred.t
 
   val query
-    : (column_names:string array -> values:string option array -> unit) with_query_args
+    : (column_names:string iarray -> values:string option iarray -> unit) with_query_args
 
   val query_zero_copy : (local_ Row_handle.t -> unit) with_query_args
 
@@ -152,9 +153,9 @@ module type S = sig
 
       - You need to pay attention to [close_finished] in case the server kicks you off.
 
-      - The postgres protocol has no heartbeats. If the server disappears in
-        a particularly bad way it might be a while before we notice. The empty query makes
-        a rather effective heartbeat (i.e. [query_expect_no_data t ""]), but this is your
+      - The postgres protocol has no heartbeats. If the server disappears in a
+        particularly bad way it might be a while before we notice. The empty query makes a
+        rather effective heartbeat (i.e. [query_expect_no_data t ""]), but this is your
         responsibility if you want it. *)
   val listen_to_notifications
     :  t
@@ -192,8 +193,7 @@ module type Pgasync_error = sig
       - long parameter values are truncated
       - only a limited number of parameters are displayed
 
-      You can change those global limits via [set_error_reporting_limits]
-    *)
+      You can change those global limits via [set_error_reporting_limits] *)
   val set_error_reporting_limits
     :  ?query_length:int (** default: 2048 *)
     -> ?parameter_length:int (** default: 128 *)
@@ -207,25 +207,31 @@ module type Private = sig
 
   module Protocol = Protocol
   module Types = Types
+  module Query_sequencer = Query_sequencer
   module Pgasync_error = Pgasync_error
   module Row_handle = Row_handle
 
   val pgasync_error_of_error : Error.t -> Pgasync_error.t
   val pq_cancel : t -> unit Or_error.t Deferred.t
+  val runtime_parameters : t -> string String.Map.t
+  val failed : t -> Pgasync_error.t -> unit
+  val close_started : t -> unit Deferred.t
+
+  (** Parses the server_version runtime parameters that we received from the server during
+      connection startup. It should correspond to [server_version_num] on the server. *)
+  val server_version : t -> (int, [ `Unknown ]) result
 
   module Simple_query_result : sig
-    (**
-       - Completed_with_no_warnings : everything worked as expected. The list will contain
-         one Command_complete.t for each statement executed
-       - Completed_with_warnings : the query ran successfully, but the query tried to do
-         something unsupported client-side (e.g. COPY TO STDOUT). The list of errors
-         will not be empty.
-       - Connection_error : The underlying connection died at some point during query
-         execution or parsing results. Query may or may not have taken effect on server.
-       - Driver_error : Postgres_async received an unexpected protocol message from the
-         server. Query may or may not have taken effect on server.
-       - Failed : Got error from server, query did not take effect on server
-    *)
+    (** - Completed_with_no_warnings : everything worked as expected. The list will
+          contain one Command_complete.t for each statement executed
+        - Completed_with_warnings : the query ran successfully, but the query tried to do
+          something unsupported client-side (e.g. COPY TO STDOUT). The list of errors will
+          not be empty.
+        - Connection_error : The underlying connection died at some point during query
+          execution or parsing results. Query may or may not have taken effect on server.
+        - Driver_error : Postgres_async received an unexpected protocol message from the
+          server. Query may or may not have taken effect on server.
+        - Failed : Got error from server, query did not take effect on server *)
 
     type t =
       | Completed_with_no_warnings of Command_complete.t list
@@ -237,14 +243,14 @@ module type Private = sig
     val to_or_pgasync_error : t -> Command_complete.t list Or_pgasync_error.t
   end
 
-  (** Executes a query according to the Postgres Simple Query protocol.  As specified in
+  (** Executes a query according to the Postgres Simple Query protocol. As specified in
       the protocol, multiple commands can be chained together using semicolons and
       executed in one operation. If not already in a transaction, the query is treated as
       transaction and all commands within it are executed atomically.
 
-      [handle_columns] is called on each column row description message. Note that
-      with simple_query, it's possible that multiple row description messages are
-      sent (as a simple query can contain multiple statements that return rows).
+      [handle_columns] is called on each column row description message. Note that with
+      simple_query, it's possible that multiple row description messages are sent (as a
+      simple query can contain multiple statements that return rows).
 
       [handle_row] is called for every row returned by the query.
 
@@ -252,16 +258,15 @@ module type Private = sig
       during processing. The query may or may not have successfully ran from the server's
       perspective.
 
-
       Queries containing COPY FROM STDIN will fail as this function does not support this
-      operation.  Queries containing COPY TO STDOUT will succeed, but the copydata will
-      not be delivered to [handle_row], and a warning will appear in [Simple_query_status]
-  *)
+      operation. Queries containing COPY TO STDOUT will succeed, but the copydata will not
+      be delivered to [handle_row], and a warning will appear in [Simple_query_status] *)
   val simple_query
-    :  ?handle_columns:(Column_metadata.t array -> unit)
+    :  ?pushback:(unit -> unit Deferred.t)
+    -> ?handle_columns:(Column_metadata.t iarray -> unit)
     -> t
     -> string
-    -> handle_row:(column_names:string array -> values:string option array -> unit)
+    -> handle_row:(column_names:string iarray -> values:string option iarray -> unit)
     -> Simple_query_result.t Deferred.t
 
   (** Executes a query that should not return any rows using the Postgres Simple Query
@@ -271,15 +276,15 @@ module type Private = sig
       If any of the queries fails, or returns at least one row, an error will be returned
       and the transaction will be aborted.
 
-      As with [simple_query], queries containing COPY FROM STDIN will fail.*)
+      As with [simple_query], queries containing COPY FROM STDIN will fail. *)
   val execute_simple : t -> string -> Simple_query_result.t Deferred.t
 
   module Without_background_asynchronous_message_handling : sig
     type t
 
-    (** Creates a TCP connection to the server, returning the Reader and
-        Writer after the login message flow has been completed successfully.
-        Will not have asynchronous message handling running *)
+    (** Creates a TCP connection to the server, returning the Reader and Writer after the
+        login message flow has been completed successfully. Will not have asynchronous
+        message handling running *)
     val login_and_get_raw
       :  ?interrupt:unit Deferred.t
       -> ?ssl_mode:Ssl_mode.t
@@ -288,9 +293,10 @@ module type Private = sig
       -> ?gss_krb_token:string
       -> ?buffer_age_limit:[ `At_most of Core_private.Span_float.t | `Unlimited ]
       -> ?buffer_byte_limit:Byte_units.t
+      -> ?max_message_length:Byte_units.t
       -> startup_message:Protocol.Frontend.StartupMessage.t
       -> unit
-      -> (t, Pgasync_error.t) result Deferred.t
+      -> t Or_pgasync_error.t Deferred.t
 
     val reader : t -> Reader.t
     val writer : t -> Writer.t
@@ -299,7 +305,29 @@ module type Private = sig
     val pq_cancel : t -> unit Deferred.Or_error.t
   end
 
+  val iter_copy_out
+    :  t
+    -> query_string:string
+    -> f:((read, Iobuf.seek) Iobuf.t -> unit Deferred.t)
+    -> Command_complete.t Or_pgasync_error.t Deferred.t
+
+  (** Access to the underlying [Reader]. It is generally not safe to interact with this
+      for a [t] that corresponds to a "normal" database connection, as this can put [t]
+      into an unexpected state. Exposed only for use in specialized db connection use
+      cases (e.g. replication) *)
   module Message_reading : Message_reading_intf.S with type t := t
+
+  (** Access to the underlying [Writer] that sends bytes to the database. It is generally
+      not safe to interact with the [Writer] here for a [t] that corresponds to a "normal"
+      database connection, as this can put [t] into an unexpected state. Exposed only for
+      use in specialized db connection use cases (e.g. replication) *)
+  val writer : t -> Writer.t
+
+  (** Internal state of [t], it is generally not safe to interact with the
+      [Query_sequencer] here for a [t] that corresponds to a "normal" database connection,
+      as this can put [t] into an unexpected state. Exposed only for use in specialized db
+      connection use cases (e.g. replication) *)
+  val query_sequencer : t -> Query_sequencer.t
 end
 
 module type Postgres_async = sig
@@ -325,10 +353,10 @@ module type Postgres_async = sig
   include S with type error := Error.t and type command_complete := unit
 
   (** The [Expert] module provides versions of all the same functions that instead return
-    [Or_pgasync_error.t]s.
+      [Or_pgasync_error.t]s.
 
-    Note that [t] and [Expert.t] is the same type, so you can mix-and-match depending on
-    whether you want to try and inspect the error code of a specific failure or not. *)
+      Note that [t] and [Expert.t] is the same type, so you can mix-and-match depending on
+      whether you want to try and inspect the error code of a specific failure or not. *)
   module Expert : S with type error := Pgasync_error.t and type command_complete := unit
 
   (** The [With_command_complete] module provides access to the contents of

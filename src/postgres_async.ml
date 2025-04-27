@@ -10,6 +10,28 @@ module Ssl_mode = Ssl_mode
 module Pgasync_error = Pgasync_error
 module Or_pgasync_error = Or_pgasync_error
 
+let validate_max_message_length len =
+  let low = Byte_units.of_kilobytes 1. in
+  let high =
+    match Word_size.word_size with
+    | W32 -> Byte_units.of_bytes_int Sys.max_string_length
+    | W64 -> Byte_units.of_bytes_int (Int.of_int32_exn Int32.max_value)
+  in
+  if Byte_units.between len ~low ~high
+  then Byte_units.bytes_int_exn len
+  else invalid_arg "invalid max_message_length"
+;;
+
+let max_message_length_override () =
+  Option.try_with (fun () ->
+    let s = Sys.getenv_exn "POSTGRES_ASYNC_OVERRIDE_MAX_MESSAGE_LENGTH" in
+    let value =
+      try Int.of_string s |> Byte_units.of_bytes_int with
+      | _ -> Byte_units.of_string s
+    in
+    validate_max_message_length value)
+;;
+
 (* https://www.postgresql.org/docs/current/protocol.html *)
 
 module Expert_with_command_complete = struct
@@ -58,6 +80,7 @@ module Expert_with_command_complete = struct
       { writer : Writer.t opaque
       ; reader : Reader.t
       ; mutable state : state
+      ; close_started : unit Ivar.t
       ; close_finished_expert : unit Or_pgasync_error.t Ivar.t
       ; close_finished : unit Or_error.t Deferred.t
       ; sequencer : Query_sequencer.t
@@ -66,12 +89,14 @@ module Expert_with_command_complete = struct
           (Pid.t -> string -> unit, read_write) Bus.t Notification_channel.Table.t
       ; backend_key : Types.backend_key Set_once.t
       ; buffer_byte_limit : int
+      ; max_message_length : int
       ; where_to_connect : packed_where_to_connect
       }
     [@@deriving sexp_of]
 
     val create_internal
       :  buffer_byte_limit:int
+      -> max_message_length:int
       -> where_to_connect:packed_where_to_connect
       -> Reader.t
       -> Writer.t
@@ -87,9 +112,9 @@ module Expert_with_command_complete = struct
       | Not_required
       | Write_afterwards
 
-    (** [flush_message] is a bit of a weird argument for this function/weird feature
-        to give this part of the code, but it reminds us to always consider the need
-        to flush. *)
+    (** [flush_message] is a bit of a weird argument for this function/weird feature to
+        give this part of the code, but it reminds us to always consider the need to
+        flush. *)
     val catch_write_errors
       :  t
       -> f:(Writer.t -> unit)
@@ -117,6 +142,7 @@ module Expert_with_command_complete = struct
       { writer : (Writer.t[@sexp.opaque])
       ; reader : (Reader.t[@sexp.opaque])
       ; mutable state : state
+      ; close_started : unit Ivar.t
       ; close_finished_expert : unit Or_pgasync_error.t Ivar.t
       ; close_finished : unit Or_error.t Deferred.t
       ; sequencer : Query_sequencer.t
@@ -125,6 +151,7 @@ module Expert_with_command_complete = struct
           (Pid.t -> string -> unit, read_write) Bus.t Notification_channel.Table.t
       ; backend_key : Types.backend_key Set_once.t
       ; buffer_byte_limit : int
+      ; max_message_length : int
       ; where_to_connect : (packed_where_to_connect[@sexp.opaque])
       }
     [@@deriving sexp_of]
@@ -137,10 +164,13 @@ module Expert_with_command_complete = struct
     let set_state t state =
       t.state <- state;
       match state with
+      | Open -> ()
       | Failed { error; resources_released = true } ->
+        Ivar.fill_if_empty t.close_started ();
         Ivar.fill_if_empty t.close_finished_expert (Error error)
       | Closed_gracefully -> Ivar.fill_if_empty t.close_finished_expert (Ok ())
-      | Closing | Open | Failed { resources_released = false; _ } -> ()
+      | Closing | Failed { resources_released = false; _ } ->
+        Ivar.fill_if_empty t.close_started ()
     ;;
 
     let cleanup_resources t =
@@ -162,11 +192,18 @@ module Expert_with_command_complete = struct
            return ())
     ;;
 
-    let create_internal ~buffer_byte_limit ~where_to_connect reader writer =
+    let create_internal
+      ~buffer_byte_limit
+      ~max_message_length
+      ~where_to_connect
+      reader
+      writer
+      =
       let close_finished_expert = Ivar.create () in
       { reader
       ; writer
       ; state = Open
+      ; close_started = Ivar.create ()
       ; close_finished_expert
       ; close_finished = Ivar.read close_finished_expert >>| Or_pgasync_error.to_or_error
       ; sequencer = Query_sequencer.create ()
@@ -175,6 +212,7 @@ module Expert_with_command_complete = struct
       ; backend_key = Set_once.create ()
       ; buffer_byte_limit
       ; where_to_connect
+      ; max_message_length
       }
     ;;
 
@@ -183,15 +221,18 @@ module Expert_with_command_complete = struct
       | Write_afterwards
 
     let catch_write_errors t ~f ~flush_message : unit =
-      match f t.writer with
-      | exception exn -> failed t (Pgasync_error.of_exn exn)
-      | () ->
-        (match flush_message with
-         | Not_required -> ()
-         | Write_afterwards ->
-           (match Protocol.Frontend.Writer.flush t.writer with
-            | exception exn -> failed t (Pgasync_error.of_exn exn)
-            | () -> ()))
+      try
+        f t.writer;
+        match flush_message with
+        | Not_required -> ()
+        | Write_afterwards -> Protocol.Frontend.Writer.flush t.writer
+      with
+      | exn ->
+        failed
+          t
+          (Pgasync_error.of_exn
+             exn
+             ~error_code:Pgasync_error.Sqlstate.connection_does_not_exist)
     ;;
 
     let bytes_pending_in_writer_buffer t = Writer.bytes_to_write t.writer
@@ -290,7 +331,6 @@ module Expert_with_command_complete = struct
   let notification_bus t channel =
     Hashtbl.find_or_add t.notification_buses channel ~default:(fun () ->
       Bus.create_exn
-        [%here]
         Arity2
         ~on_subscription_after_first_write:Allow
         ~on_callback_raise:Error.raise)
@@ -298,24 +338,12 @@ module Expert_with_command_complete = struct
 
   (* [Message_reading] hides the helper functions of [read_messages] from the below. *)
   module Message_reading : Message_reading_intf.S with type t := t = struct
+    open Eager_deferred.Use
+
     type 'a handle_message_result =
       | Stop of 'a
       | Continue
       | Protocol_error of Pgasync_error.t
-
-    let max_message_length =
-      let default = 50 * 1024 * 1024 in
-      lazy
-        (let override =
-           (* for emergencies, in case 50M is a terrible default (seems very unlikely) *)
-           let open Option.Let_syntax in
-           let%bind v = Unix.getenv "POSTGRES_ASYNC_OVERRIDE_MAX_MESSAGE_LENGTH" in
-           let%bind v = Option.try_with (fun () -> Int.of_string v) in
-           let%bind v = Option.some_if (v > 0) v in
-           Some v
-         in
-         Option.value override ~default)
-    ;;
 
     (* [Reader.read_one_iobuf_at_a_time] hands us 'chunks' to [handle_chunk]. A chunk is
        an iobuf, where the window of the iobuf is set to the data that has been pulled
@@ -389,9 +417,10 @@ module Expert_with_command_complete = struct
        Note the check against [max_message_length]. Without it, if postgres told us that
        it was sending us an extremely long message, we'd return from [handle_chunk]
        constantly asking for refills, always thinking we needed more data and consuming
-       all the RAM. Instead, we will just bail out rather than asking for refills if
-       a message gets too long. The limit is arbitrary, but ought to be enough for anybody
-       (with an environment variable escape hatch if we turn out to be wrong). *)
+       all the RAM. Instead, we will just bail out rather than asking for refills if a
+       message gets too long. The limit is arbitrary (1GB), selected to match current
+       column and row length limits in postgres, but ought to be enough for anybody (with
+       an environment variable escape hatch if we turn out to be wrong). *)
 
     let check_window_after_handle_message message_type iobuf ~message_hi_bound =
       match
@@ -413,7 +442,7 @@ module Expert_with_command_complete = struct
          | true -> Ok ())
     ;;
 
-    let handle_chunk ~handle_message ~pushback =
+    let handle_chunk t ~handle_message =
       let stop_error sexp =
         return
           (`Stop
@@ -425,22 +454,18 @@ module Expert_with_command_complete = struct
       let rec loop iobuf =
         let chunk_hi_bound = Iobuf.Hi_bound.window iobuf in
         match Protocol.Backend.focus_on_message iobuf with
-        | Error Iobuf_too_short_for_header ->
-          let%bind () = pushback () in
-          return `Continue
+        | Error Iobuf_too_short_for_header -> return `Continue
         | Error (Iobuf_too_short_for_message { message_length }) ->
-          (match message_length > force max_message_length with
+          (match message_length > t.max_message_length with
            | true -> stop_error [%message "Message too long" (message_length : int)]
-           | false ->
-             let%bind () = pushback () in
-             return `Continue)
+           | false -> return `Continue)
         | Error (Nonsense_message_length v) ->
           stop_error [%message "Nonsense message length in header" ~_:(v : int)]
         | Error (Unknown_message_type other) ->
           stop_error [%message "Unrecognised message type character" (other : char)]
         | Ok message_type ->
           let message_hi_bound = Iobuf.Hi_bound.window iobuf in
-          let res =
+          let%bind.Eager_deferred res =
             let iobuf = Iobuf.read_only iobuf in
             handle_message message_type iobuf
           in
@@ -463,59 +488,64 @@ module Expert_with_command_complete = struct
       Staged.stage loop
     ;;
 
-    let no_pushback () = return ()
-
     type 'a read_messages_result =
       | Connection_closed of Pgasync_error.t
       | Done of 'a
 
-    let can't_read_because_closed =
+    let can't_read_because_closed_and_eof =
       lazy
-        (return
-           (Connection_closed
-              (Pgasync_error.of_string
-                 ~error_code:Pgasync_error.Sqlstate.connection_does_not_exist
-                 "can't read: closed or closing")))
+        (Connection_closed
+           (Pgasync_error.of_string
+              ~error_code:Pgasync_error.Sqlstate.connection_does_not_exist
+              "can't read from connection: connection is either closed or closing, and \
+               no messages available"))
     ;;
 
-    let run_reader ?(pushback = no_pushback) t ~handle_message =
-      let handle_chunk = Staged.unstage (handle_chunk ~handle_message ~pushback) in
-      match t.state with
-      | Failed { error; _ } -> return (Connection_closed error)
-      | Closed_gracefully | Closing -> force can't_read_because_closed
-      | Open ->
+    let run_reader t ~handle_message =
+      let handle_chunk = Staged.unstage (handle_chunk t ~handle_message) in
+      let bytes_available =
+        if Reader.is_closed t.reader then false else Reader.bytes_available t.reader > 0
+      in
+      (* If there are still bytes available in the reader, we would try to consume them,
+         even if our internal state indicates that the connection is closed. We would
+         never have an excessive amount of data to process, both due to the postgres write
+         behaviour and because of input buffer limits *)
+      match t.state, bytes_available with
+      | Failed { error; _ }, _ -> return (Connection_closed error)
+      | (Closed_gracefully | Closing), false ->
+        return (force can't_read_because_closed_and_eof)
+      | Open, _ | (Closed_gracefully | Closing), true ->
         (* [t.state] = [Open _] implies [t.reader] is not closed, and so this function will
            not raise. Note further that if the reader is closed _while_ we are reading, it
            does not raise. *)
-        let%bind res = Reader.read_one_iobuf_at_a_time t.reader ~handle_chunk in
-        (* In case of some failure (writer failure, including asynchronous) the
-           reader will be closed and reads will return Eof. So, after the read
-           result is determined, we check [t.state], so that we can give a better
-           error message than "unexpected EOF". *)
-        (match t.state with
-         | Failed { error; _ } -> return (Connection_closed error)
-         | Closing | Closed_gracefully -> force can't_read_because_closed
-         | Open ->
-           let res =
-             match res with
-             | `Stopped s -> s
-             | `Eof_with_unconsumed_data data ->
-               `Protocol_error
-                 (Pgasync_error.create_s
-                    ~error_code:Pgasync_error.Sqlstate.connection_does_not_exist
-                    [%message
-                      "Unexpected EOF" ~unconsumed_bytes:(String.length data : int)])
-             | `Eof ->
-               `Protocol_error
-                 (Pgasync_error.of_string
-                    ~error_code:Pgasync_error.Sqlstate.connection_does_not_exist
-                    "Unexpected EOF (no unconsumed messages)")
-           in
-           (match res with
-            | `Protocol_error err ->
-              failed t err;
-              return (Connection_closed err)
-            | `Done res -> return (Done res)))
+        let on_protocol_error err =
+          failed t err;
+          Connection_closed err
+        in
+        (match%map Reader.read_one_iobuf_at_a_time t.reader ~handle_chunk with
+         | `Stopped (`Protocol_error error) -> on_protocol_error error
+         | `Stopped (`Done res) -> Done res
+         | (`Eof_with_unconsumed_data _ | `Eof) as res ->
+           (* In case of some failure (writer failure, including asynchronous) the reader
+               will be closed and reads will return Eof. So, after the read result is
+               determined, we check [t.state], so that we can give a better error message
+               than "unexpected EOF". *)
+           (match t.state with
+            | Failed { error; _ } -> Connection_closed error
+            | Closing | Closed_gracefully -> force can't_read_because_closed_and_eof
+            | Open ->
+              (match res with
+               | `Eof_with_unconsumed_data data ->
+                 on_protocol_error
+                   (Pgasync_error.create_s
+                      ~error_code:Pgasync_error.Sqlstate.connection_does_not_exist
+                      [%message
+                        "Unexpected EOF" ~unconsumed_bytes:(String.length data : int)])
+               | `Eof ->
+                 on_protocol_error
+                   (Pgasync_error.of_string
+                      ~error_code:Pgasync_error.Sqlstate.connection_does_not_exist
+                      "Unexpected EOF (no unconsumed messages)"))))
     ;;
 
     let handle_notice_response iobuf =
@@ -568,25 +598,33 @@ module Expert_with_command_complete = struct
         Ok ()
     ;;
 
-    let read_messages ?pushback t ~handle_message =
-      let continue_if_ok = function
-        | Error err -> Protocol_error err
-        | Ok () -> Continue
+    let read_messages' t ~handle_message =
+      let[@inline] continue_if_ok = function
+        | Error err -> return (Protocol_error err)
+        | Ok () -> return Continue
       in
-      let handle_message message_type iobuf =
+      run_reader t ~handle_message:(fun message_type iobuf ->
         match (message_type : Protocol.Backend.constructor) with
         | NoticeResponse -> continue_if_ok (handle_notice_response iobuf)
         | ParameterStatus -> continue_if_ok (handle_parameter_status t iobuf)
         | NotificationResponse -> continue_if_ok (handle_notification_response t iobuf)
-        | _ -> handle_message message_type iobuf
-      in
-      run_reader ?pushback t ~handle_message
+        | _ -> handle_message message_type iobuf)
+    ;;
+
+    let read_messages ?pushback t ~handle_message =
+      read_messages' t ~handle_message:(fun message_type iobuf ->
+        let result = handle_message message_type iobuf in
+        match pushback with
+        | None -> return result
+        | Some pushback ->
+          let%map () = pushback () in
+          result)
     ;;
 
     let consume_one_asynchronous_message t =
       let stop_if_ok = function
-        | Error err -> Protocol_error err
-        | Ok () -> Stop ()
+        | Error err -> return (Protocol_error err)
+        | Ok () -> return (Stop ())
       in
       let handle_message message_type iobuf =
         match (message_type : Protocol.Backend.constructor) with
@@ -616,14 +654,15 @@ module Expert_with_command_complete = struct
                 ~error_code:Pgasync_error.Sqlstate.protocol_violation
             | Ok err -> Pgasync_error.of_error_response err |> Pgasync_error.tag ~tag
           in
-          Protocol_error error
+          return (Protocol_error error)
         | other ->
-          Protocol_error
-            (Pgasync_error.create_s
-               ~error_code:Pgasync_error.Sqlstate.protocol_violation
-               [%message
-                 "Unsolicited message from server outside of query conversation"
-                   (other : Protocol.Backend.constructor)])
+          return
+            (Protocol_error
+               (Pgasync_error.create_s
+                  ~error_code:Pgasync_error.Sqlstate.protocol_violation
+                  [%message
+                    "Unsolicited message from server outside of query conversation"
+                      (other : Protocol.Backend.constructor)]))
       in
       run_reader t ~handle_message
     ;;
@@ -631,16 +670,14 @@ module Expert_with_command_complete = struct
 
   include Message_reading
 
-  let protocol_error_of_error
-    ?(other_error_code = Pgasync_error.Sqlstate.protocol_violation)
-    error
-    =
-    Protocol_error (Pgasync_error.of_error ~error_code:other_error_code error)
+  let protocol_error_of_error error =
+    let error_code = Pgasync_error.Sqlstate.protocol_violation in
+    Protocol_error (Pgasync_error.of_error ~error_code error)
   ;;
 
   let protocol_error_s sexp =
-    Protocol_error
-      (Pgasync_error.create_s ~error_code:Pgasync_error.Sqlstate.protocol_violation sexp)
+    let error_code = Pgasync_error.Sqlstate.protocol_violation in
+    Protocol_error (Pgasync_error.create_s ~error_code sexp)
   ;;
 
   let unexpected_msg_type ~here msg_type state =
@@ -703,7 +740,7 @@ module Expert_with_command_complete = struct
         (match Protocol.Backend.BackendKeyData.consume iobuf with
          | Error err -> protocol_error_of_error err
          | Ok data ->
-           (match Set_once.set t.backend_key [%here] data with
+           (match Set_once.set t.backend_key data with
             | Ok () -> Continue
             | Error _ -> protocol_error_s [%sexp "duplicate BackendKeyData messages"]))
       | ReadyForQuery ->
@@ -768,19 +805,11 @@ module Expert_with_command_complete = struct
                | Done () -> return Q.Call_me_when_idle_again))))
   ;;
 
-  let default_user =
-    Memo.unit (fun () ->
-      Monitor.try_with_or_error ~rest:`Log (fun () -> Unix.getlogin ()))
-  ;;
-
-  let default_where_to_connect =
-    lazy (Where_to_connect (Tcp.Where_to_connect.of_file "/run/postgresql/.s.PGSQL.5432"))
-  ;;
-
   let maybe_ssl_wrap
     ~buffer_byte_limit
     ~interrupt
     ~where_to_connect
+    ~max_message_length
     ~ssl_mode
     ~tcp_reader
     ~tcp_writer
@@ -829,6 +858,7 @@ module Expert_with_command_complete = struct
                      create_internal
                        ~where_to_connect
                        ~buffer_byte_limit
+                       ~max_message_length
                        ssl_reader
                        ssl_writer
                    in
@@ -856,6 +886,7 @@ module Expert_with_command_complete = struct
                    (create_internal
                       ~where_to_connect
                       ~buffer_byte_limit
+                      ~max_message_length
                       tcp_reader
                       tcp_writer)))
          | `Ok response_char ->
@@ -878,7 +909,12 @@ module Expert_with_command_complete = struct
     match (ssl_mode : Ssl_mode.t) with
     | Disable ->
       let t =
-        create_internal ~where_to_connect ~buffer_byte_limit tcp_reader tcp_writer
+        create_internal
+          ~where_to_connect
+          ~max_message_length
+          ~buffer_byte_limit
+          tcp_reader
+          tcp_writer
       in
       return (Ok t)
     | Prefer -> negotiate_ssl ~required:false
@@ -888,6 +924,7 @@ module Expert_with_command_complete = struct
   let connect_tcp_and_maybe_start_ssl
     ~buffer_age_limit
     ~buffer_byte_limit
+    ~max_message_length
     ~interrupt
     ~ssl_mode
     where_to_connect
@@ -903,6 +940,7 @@ module Expert_with_command_complete = struct
          maybe_ssl_wrap
            ~where_to_connect
            ~buffer_byte_limit
+           ~max_message_length
            ~interrupt
            ~ssl_mode
            ~tcp_reader
@@ -925,23 +963,33 @@ module Expert_with_command_complete = struct
     ?server
     ?password
     ?gss_krb_token
-    ?(buffer_age_limit = `At_most (Time_float.Span.of_int_min 2))
+    ?(buffer_age_limit = `Unlimited)
     ?(buffer_byte_limit = Byte_units.of_megabytes 128.)
+    ?(max_message_length = Byte_units.of_gigabytes 1.)
     ~startup_message
     ()
     =
-    let where_to_connect =
-      match server with
-      | Some x -> Where_to_connect x
-      | None -> force default_where_to_connect
-    in
     match%bind
-      connect_tcp_and_maybe_start_ssl
-        ~buffer_age_limit
-        ~buffer_byte_limit:(Byte_units.bytes_int_exn buffer_byte_limit)
-        ~interrupt
-        ~ssl_mode
-        where_to_connect
+      Deferred.Or_error.try_with_join ~extract_exn:true (fun () ->
+        let max_message_length =
+          match max_message_length_override () with
+          | Some override -> override
+          | None -> validate_max_message_length max_message_length
+        in
+        let where_to_connect =
+          match server with
+          | Some x -> Where_to_connect x
+          | None ->
+            Where_to_connect
+              (Tcp.Where_to_connect.of_file "/run/postgresql/.s.PGSQL.5432")
+        in
+        connect_tcp_and_maybe_start_ssl
+          ~buffer_age_limit
+          ~buffer_byte_limit:(Byte_units.bytes_int_exn buffer_byte_limit)
+          ~max_message_length
+          ~interrupt
+          ~ssl_mode
+          where_to_connect)
     with
     | Error error ->
       return
@@ -988,6 +1036,7 @@ module Expert_with_command_complete = struct
     ?gss_krb_token
     ?buffer_age_limit
     ?buffer_byte_limit
+    ?max_message_length
     ~database
     ?replication
     ()
@@ -997,7 +1046,7 @@ module Expert_with_command_complete = struct
       (let%bind.Deferred.Result user =
          match user with
          | Some u -> return (Ok u)
-         | None -> default_user ()
+         | None -> Monitor.try_with_or_error Unix.username ~extract_exn:true
        in
        return
          (Or_error.try_with (fun () ->
@@ -1017,6 +1066,7 @@ module Expert_with_command_complete = struct
         ?gss_krb_token
         ?buffer_age_limit
         ?buffer_byte_limit
+        ?max_message_length
         ~startup_message
         ()
     in
@@ -1033,6 +1083,7 @@ module Expert_with_command_complete = struct
     ?gss_krb_token
     ?buffer_age_limit
     ?buffer_byte_limit
+    ?max_message_length
     ?try_cancel_statement_before_close
     ~database
     ?replication
@@ -1049,6 +1100,7 @@ module Expert_with_command_complete = struct
         ?gss_krb_token
         ?buffer_age_limit
         ?buffer_byte_limit
+        ?max_message_length
         ~database
         ?replication
         ()
@@ -1476,18 +1528,18 @@ module Expert_with_command_complete = struct
       ~handle_columns
       query_string
       ~prepare:(fun ~about_to_deliver_rows ->
-        Array.map about_to_deliver_rows ~f:Column_metadata.name)
+        Iarray.map about_to_deliver_rows ~f:Column_metadata.name)
       ~handle_row:(fun column_names ~description:_ ~datarow_iobuf:iobuf ->
         match Protocol.Backend.DataRow.consume iobuf with
         | Error err -> protocol_error_of_error err
         | Ok values ->
-          (match Array.length values = Array.length column_names with
+          (match Iarray.length values = Iarray.length column_names with
            | false ->
              protocol_error_s
                [%message
                  "number of columns in DataRow message did not match RowDescription"
-                   (column_names : string array)
-                   (values : string option array)]
+                   (column_names : string iarray)
+                   (values : string option iarray)]
            | true ->
              handle_row ~column_names ~values;
              Continue))
@@ -1621,12 +1673,12 @@ module Expert_with_command_complete = struct
   (* Runs through the state-machine for the messages returned from the server
      as a result of a simple query. Returns whether the query was successfully
      executed or, if not, an appropriate error message. *)
-  let handle_simple_query_messages t ~handle_columns ~handle_row =
+  let handle_simple_query_messages ?pushback t ~handle_columns ~handle_row =
     let current_row_description = ref None in
     let status =
       ref (Simple_query_status.Fields.create ~result:(Success []) ~warnings:[])
     in
-    read_messages t ~handle_message:(fun msg_type iobuf ->
+    read_messages ?pushback t ~handle_message:(fun msg_type iobuf ->
       match (msg_type : Protocol.Backend.constructor) with
       | CommandComplete ->
         (* A RowDescription can be followed by multiple DataRows, and then
@@ -1659,14 +1711,14 @@ module Expert_with_command_complete = struct
          | Some (_ : Protocol.Backend.RowDescription.t), Error err ->
            protocol_error_of_error err
          | Some row_description, Ok values ->
-           let column_names = Array.map row_description ~f:Column_metadata.name in
-           (match Array.length column_names <> Array.length values with
+           let column_names = Iarray.map row_description ~f:Column_metadata.name in
+           (match Iarray.length column_names <> Iarray.length values with
             | true ->
               protocol_error_s
                 [%message
                   "number of columns in DataRow message did not match RowDescription"
-                    (column_names : string array)
-                    (values : string option array)]
+                    (column_names : string iarray)
+                    (values : string option iarray)]
             | false ->
               handle_row ~column_names ~values;
               Continue))
@@ -1740,7 +1792,7 @@ module Expert_with_command_complete = struct
         Stop !status)
   ;;
 
-  let simple_query ?handle_columns t query_string ~handle_row =
+  let simple_query ?pushback ?handle_columns t query_string ~handle_row =
     let callback_raised = ref false in
     let wrap_callback ~f =
       match !callback_raised with
@@ -1766,7 +1818,7 @@ module Expert_with_command_complete = struct
         catch_write_errors t ~flush_message:Write_afterwards ~f:(fun writer ->
           Protocol.Frontend.Writer.query writer query_string);
         let%map return_status =
-          handle_simple_query_messages t ~handle_columns ~handle_row
+          handle_simple_query_messages ?pushback t ~handle_columns ~handle_row
         in
         match return_status with
         | Connection_closed error -> Simple_query_result.Connection_error error
@@ -1797,7 +1849,7 @@ module Expert_with_command_complete = struct
         query_string
         ~handle_row:
           (fun
-            ~column_names:(_ : string array) ~values:(_ : string option array) ->
+            ~column_names:(_ : string iarray) ~values:(_ : string option iarray) ->
           returned_rows := true)
     in
     if !returned_rows
@@ -1844,6 +1896,72 @@ module Expert_with_command_complete = struct
       | Error err ->
         return (Error (Pgasync_error.tag_by_query ~parameters ~query_string err))
       | Ok result -> return (Ok result))
+  ;;
+
+  let iter_copy_out t ~query_string ~f =
+    Query_sequencer.enqueue t.sequencer (fun () ->
+      let%bind result =
+        match%bind parse_and_start_executing_query t query_string ~parameters:[||] with
+        | Connection_closed _ as err -> return err
+        | Done (Ready_to_copy_in _) ->
+          let reason = "[Postgres_async.copy_out]: query attempted COPY IN" in
+          let%bind (Connection_closed _ | Done ()) = abort_copy_in t ~reason in
+          return (Done (Or_pgasync_error.error_string reason))
+        | Done (About_to_deliver_rows _) ->
+          (match%bind drain_datarows t with
+           | Connection_closed _ as err -> return err
+           | Done (0, command_complete) -> return (Done (Ok command_complete))
+           | Done _ ->
+             return
+               (Done
+                  (Or_pgasync_error.error_s [%message "query unexpectedly produced rows"])))
+        | Done (Remote_reported_error error) -> return (Done (Error error))
+        | Done Empty_query -> return (Done (Ok Command_complete.empty))
+        | Done (Command_complete_without_output command_complete) ->
+          return (Done (Ok command_complete))
+        | Done About_to_copy_out ->
+          (* See https://www.postgresql.org/docs/current/protocol-flow.html#PROTOCOL-COPY.
+             [read_messages'] handles NoticeResponse and ParameterStatus for us.
+          *)
+          let seen_copy_done = ref false in
+          read_messages' t ~handle_message:(fun msg_type iobuf ->
+            match msg_type with
+            | ErrorResponse ->
+              (* [ErrorResponse] terminates copy-out mode; no separate [CopyDone] is required. *)
+              return
+                (match Protocol.Backend.ErrorResponse.consume iobuf with
+                 | Error err -> protocol_error_of_error err
+                 | Ok error_response ->
+                   Stop (Error (Pgasync_error.of_error_response error_response)))
+            | CopyData ->
+              (match !seen_copy_done with
+               | true ->
+                 return
+                   (protocol_error_s
+                      [%sexp "Received unexpected CopyData message after CopyDone"])
+               | false ->
+                 let%map.Eager_deferred () = f iobuf in
+                 Continue)
+            | CopyDone ->
+              Protocol.Shared.CopyDone.consume iobuf;
+              seen_copy_done := true;
+              return Continue
+            | CommandComplete ->
+              return
+                (match Protocol.Backend.CommandComplete.consume iobuf with
+                 | Error err -> protocol_error_of_error err
+                 | Ok tag ->
+                   (match !seen_copy_done with
+                    | false ->
+                      protocol_error_s
+                        [%sexp "Received unexpected CommandComplete before CopyDone"]
+                    | true -> Stop (Ok (Command_complete.create ~tag ~rows:None))))
+            | msg_type ->
+              return (unexpected_msg_type ~here:[%here] msg_type [%sexp "copy-out mode"]))
+      in
+      match%bind handle_ready_for_query t result with
+      | Ok result -> return (Ok result)
+      | Error err -> return (Error (Pgasync_error.tag_by_query ~query_string err)))
   ;;
 
   type 'a feed_data_result =
@@ -1997,7 +2115,6 @@ module Expert_with_command_complete = struct
     let subscriber =
       Bus.subscribe_exn
         bus
-        [%here]
         ~f:(fun pid payload -> f ~pid ~payload)
         ~on_callback_raise:(fun error -> Monitor.send_exn monitor (Error.to_exn error))
     in
@@ -2018,6 +2135,7 @@ module With_command_complete = struct
     ?gss_krb_token
     ?buffer_age_limit
     ?buffer_byte_limit
+    ?max_message_length
     ~database
     ?replication
     ()
@@ -2031,6 +2149,7 @@ module With_command_complete = struct
       ?gss_krb_token
       ?buffer_age_limit
       ?buffer_byte_limit
+      ?max_message_length
       ~database
       ?replication
       ()
@@ -2072,6 +2191,7 @@ module With_command_complete = struct
     ?gss_krb_token
     ?buffer_age_limit
     ?buffer_byte_limit
+    ?max_message_length
     ?try_cancel_statement_before_close
     ~database
     ?replication
@@ -2087,6 +2207,7 @@ module With_command_complete = struct
       ?gss_krb_token
       ?buffer_age_limit
       ?buffer_byte_limit
+      ?max_message_length
       ?try_cancel_statement_before_close
       ~database
       ?replication
@@ -2211,6 +2332,7 @@ let connect
   ?gss_krb_token
   ?buffer_age_limit
   ?buffer_byte_limit
+  ?max_message_length
   ~database
   ?replication
   ()
@@ -2224,6 +2346,7 @@ let connect
     ?gss_krb_token
     ?buffer_age_limit
     ?buffer_byte_limit
+    ?max_message_length
     ~database
     ?replication
     ()
@@ -2264,6 +2387,7 @@ let with_connection
   ?gss_krb_token
   ?buffer_age_limit
   ?buffer_byte_limit
+  ?max_message_length
   ?try_cancel_statement_before_close
   ~database
   ?replication
@@ -2279,6 +2403,7 @@ let with_connection
     ?gss_krb_token
     ?buffer_age_limit
     ?buffer_byte_limit
+    ?max_message_length
     ?try_cancel_statement_before_close
     ~database
     ?replication
@@ -2325,18 +2450,25 @@ let query_zero_copy t ?parameters ?pushback ?handle_columns query_string ~handle
 
 module Private = struct
   module Protocol = Protocol
-  module Types = Types
+  module Types = Protocol.Types
   module Message_reading = Expert.Message_reading
+  module Query_sequencer = Query_sequencer
   module Pgasync_error = Pgasync_error
   module Row_handle = Row_handle
 
   let pgasync_error_of_error = Pgasync_error.of_error ?error_code:None
   let pq_cancel = Expert.pq_cancel
+  let failed = Expert.failed
+  let iter_copy_out = Expert.iter_copy_out
 
   module Simple_query_result = Expert.Simple_query_result
 
   let simple_query = Expert.simple_query
   let execute_simple = Expert.execute_simple
+  let writer = Expert.writer
+  let runtime_parameters = Expert.runtime_parameters
+  let query_sequencer (t : Expert.t) = t.sequencer
+  let close_started (t : Expert.t) = Ivar.read t.close_started
 
   module Without_background_asynchronous_message_handling = struct
     type nonrec t = t
@@ -2348,4 +2480,41 @@ module Private = struct
     let runtime_parameters = Expert.runtime_parameters
     let pq_cancel = pq_cancel
   end
+
+  let server_version (t : Expert.t) =
+    (* logic adapted from libpq's fe-exec.c *)
+    let rec of_radix digits ~radix =
+      match digits with
+      | [] -> 0
+      | [ x ] ->
+        assert (x >= 0);
+        x
+      | x :: y :: digits ->
+        assert (Int.between y ~low:0 ~high:(radix - 1));
+        assert (Int.between x ~low:0 ~high:((Int.max_value - y) / radix));
+        of_radix (((x * radix) + y) :: digits) ~radix
+    in
+    match
+      let server_version = Hashtbl.find_exn t.runtime_parameters "server_version" in
+      let new_style major minor = of_radix [ major; minor ] ~radix:(100 * 100) in
+      let old_style major minor rev = of_radix [ major; minor; rev ] ~radix:100 in
+      match Scanf.sscanf_opt server_version "%u.%u.%u" old_style with
+      | Some version -> version
+      | None ->
+        (match
+           Scanf.sscanf_opt server_version "%u.%u" (fun major minor ->
+             if major >= 10
+             then new_style major minor
+             else (* old style without revision, e.g. 9.6devel *)
+               old_style major minor 0)
+         with
+         | Some version -> version
+         | None ->
+           Scanf.sscanf server_version "%u" (fun major ->
+             (* new style without minor version, e.g. 10devel *)
+             new_style major 0))
+    with
+    | n -> Ok n
+    | exception _ -> Error `Unknown
+  ;;
 end

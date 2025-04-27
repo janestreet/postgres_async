@@ -54,8 +54,8 @@ let query_exn
         match show_column_names with
         | true ->
           print_s
-            [%sexp (Array.zip_exn column_names values : (string * string option) array)]
-        | false -> print_s [%sexp (values : string option array)]
+            [%sexp (Iarray.zip_exn column_names values : (string * string option) iarray)]
+        | false -> print_s [%sexp (values : string option iarray)]
       in
       Postgres_async.query postgres ?handle_columns ?parameters ?pushback str ~handle_row
       >>| ok_exn
@@ -236,7 +236,7 @@ let%expect_test "failures are reported gracefully and don't kill the connection"
           postgres
           str
           ~handle_row:(fun ~column_names:_ ~values ->
-            print_s [%message "row" ~_:(values : string option array)])
+            print_s [%message "row" ~_:(values : string option iarray)])
       with
       | Ok () ->
         print_s [%message "OK"];
@@ -441,7 +441,7 @@ let%expect_test "pushback" =
         "SELECT y, z FROM x ORDER BY y"
         ~handle_row:(fun ~column_names:_ ~values ->
           let y, z =
-            match values with
+            match Iarray.to_array values with
             | [| Some y; Some z |] -> y, z
             | _ -> assert false
           in
@@ -638,12 +638,12 @@ let%expect_test "the handle_column callback" =
         postgres
         ~handle_columns:(fun desc ->
           let columns =
-            Array.map desc ~f:(fun column ->
+            Iarray.map desc ~f:(fun column ->
               let name = Postgres_async.Column_metadata.name column in
               let pg_type_oid = Postgres_async.Column_metadata.pg_type_oid column in
               name, pg_type_oid)
           in
-          print_s [%message (columns : (string * int) Array.t)])
+          print_s [%message (columns : (string * int) Iarray.t)])
         ~show_column_names:true
     in
     (* Setup two tables and a view. *)
@@ -705,7 +705,7 @@ let%expect_test "handle_column raising prevents any call to handle_row" =
       Monitor.try_with (fun () ->
         query_exn
           postgres
-          ~handle_columns:(fun (_ : Postgres_async.Column_metadata.t array) ->
+          ~handle_columns:(fun (_ : Postgres_async.Column_metadata.t iarray) ->
             raise_s [%message "Intentionally raising in handle_columns"])
           ~show_column_names:true
           "SELECT * from pg_type")

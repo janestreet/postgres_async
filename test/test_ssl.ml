@@ -2,7 +2,7 @@ open Core
 open Async
 module Socket_id = Unique_id.Int ()
 
-let () = Backtrace.elide := true
+let () = Dynamic.set_root Backtrace.elide true
 let accept_login = "R\x00\x00\x00\x08\x00\x00\x00\x00Z\x00\x00\x00\x05I"
 
 let with_manual_server ~handle_client ~f:callback =
@@ -130,7 +130,7 @@ let connect_and_close ~ssl_mode where_to_connect =
   in
   match conn with
   | Error error ->
-    print_s [%message (error : Error.t)];
+    Expect_test_helpers_core.print_s ~hide_positions:true [%message (error : Error.t)];
     Deferred.unit
   | Ok conn ->
     printf "Connected\n";
@@ -147,11 +147,11 @@ let%expect_test "SSL negotation failure does not raise" =
   in
   [%expect
     {|
-    (error
-     (monitor.ml.Error
+    (error (
+      monitor.ml.Error
       (Ssl_error
-       ("error:1408F10B:SSL routines:ssl3_get_record:wrong version number")
-       lib/async_ssl/src/ssl.ml:218:20)
+        ("error:1408F10B:SSL routines:ssl3_get_record:wrong version number")
+        lib/async_ssl/src/ssl.ml:LINE:COL)
       ("<backtrace elided in test>" "Caught by monitor ssl_pipe")))
     |}];
   Deferred.unit
@@ -176,8 +176,8 @@ let%expect_test "Do not use SSL or connect if server returns unknown char respon
   [%expect
     {|
     closing writer
-    (error
-     ("Postgres Server indicated it does not understand the SSLRequest message. This may mean that the server is running a very outdated version of postgres, or some other problem may be occurring. You can try to run with ssl_mode = Disable to skip the SSLRequest and use plain TCP."
+    (error (
+      "Postgres Server indicated it does not understand the SSLRequest message. This may mean that the server is running a very outdated version of postgres, or some other problem may be occurring. You can try to run with ssl_mode = Disable to skip the SSLRequest and use plain TCP."
       (response_char E)))
     |}];
   Deferred.unit
@@ -218,8 +218,8 @@ let%expect_test "SSL negotiation: Error if SSL is required but not available" =
   [%expect
     {|
     closing writer
-    (error
-     ("Postgres Server indicated it does not understand the SSLRequest message. This may mean that the server is running a very outdated version of postgres, or some other problem may be occurring. You can try to run with ssl_mode = Disable to skip the SSLRequest and use plain TCP."
+    (error (
+      "Postgres Server indicated it does not understand the SSLRequest message. This may mean that the server is running a very outdated version of postgres, or some other problem may be occurring. You can try to run with ssl_mode = Disable to skip the SSLRequest and use plain TCP."
       (response_char E)))
     |}];
   Deferred.unit

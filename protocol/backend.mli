@@ -67,9 +67,8 @@ module Error_or_notice_field : sig
 end
 
 module ErrorResponse : sig
-  (** In the protocol, the [Code] field is mandatory, so we also extract it to
-        a separate non-optional record label. It will still appear in the [all_fields]
-        list. *)
+  (** In the protocol, the [Code] field is mandatory, so we also extract it to a separate
+      non-optional record label. It will still appear in the [all_fields] list. *)
   type t =
     { error_code : string
     ; all_fields : (Error_or_notice_field.t * string) list
@@ -80,9 +79,8 @@ module ErrorResponse : sig
 end
 
 module NoticeResponse : sig
-  (** In the protocol, the [Code] field is mandatory, so we also extract it to
-        a separate non-optional record label. It will still appear in the [all_fields]
-        list. *)
+  (** In the protocol, the [Code] field is mandatory, so we also extract it to a separate
+      non-optional record label. It will still appear in the [all_fields] list. *)
   type t =
     { error_code : string
     ; all_fields : (Error_or_notice_field.t * string) list
@@ -172,25 +170,25 @@ module CloseComplete : sig
 end
 
 module RowDescription : sig
-  (** Technically [format] could be [`Binary], but since [Frontend.Bind]
-        doesn't ever ask for binary output right now, it's impossible to receive
-        it from the server, and [consume] will reject it for simplicity. *)
-  type t = Column_metadata.t array
+  (** Technically [format] could be [`Binary], but since [Frontend.Bind] doesn't ever ask
+      for binary output right now, it's impossible to receive it from the server, and
+      [consume] will reject it for simplicity. *)
+  type t = Column_metadata.t iarray
 
   val consume : ([> read ], seek) Iobuf.t -> t Or_error.t
 end
 
 module DataRow : sig
-  type t = string option array
+  type t = string option iarray
 
   val consume : ([> read ], seek) Iobuf.t -> t Or_error.t
   val skip : ([> read ], seek) Iobuf.t -> unit
 end
 
 module type CopyResponse = sig
-  (** Unlike in [RowDescription], it is possible to receive [`Binary] here
-        because someone could put that option in their COPY query.
-        [Postgres_async] will then abort the copy. *)
+  (** Unlike in [RowDescription], it is possible to receive [`Binary] here because someone
+      could put that option in their COPY query. [Postgres_async] will then abort the
+      copy. *)
   type column =
     { name : string
     ; format : [ `Text | `Binary ]

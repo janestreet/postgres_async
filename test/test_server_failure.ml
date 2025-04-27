@@ -216,9 +216,9 @@ let%expect_test "invaild messages during login" =
     |}];
   (* very long message *)
   let%bind () =
-    try_connect ~send_eof_after_response:false "R\x08\x00\x00\x00 blah blah blah"
+    try_connect ~send_eof_after_response:false "R\x40\x00\x00\x04 blah blah blah"
   in
-  [%expect {| (Error ("Message too long" (message_length 134217729))) |}];
+  [%expect {| (Error ("Message too long" (message_length 1073741829))) |}];
   (* message truncated by EOF *)
   let%bind () = try_connect "R\x00\x00\x00\x05" in
   [%expect {| (Error ("Unexpected EOF" (unconsumed_bytes 5))) |}];
@@ -265,7 +265,7 @@ let%expect_test "invalid messages during query_expect_no_data" =
           | None -> [%sexp "<none>"]
           | Some s -> [%sexp (s : string)]
         in
-        print_s [%message "row" (column_names : string array) (values : sopt array)]
+        print_s [%message "row" (column_names : string iarray) (values : sopt iarray)]
       in
       let%bind r1 = Postgres_async.query postgres "<dummy>" ~handle_row in
       print_s ~hide_positions:true [%message (r1 : _ Or_error.t)];
@@ -425,11 +425,11 @@ let%expect_test "invalid messages during query_expect_no_data" =
   let%bind () =
     try_query
       ~send_eof_after_response:false
-      (parsecomplete ^ bindcomplete ^ rowdescription ^ "D\x08\x00\x00\x00 blah blah blah")
+      (parsecomplete ^ bindcomplete ^ rowdescription ^ "D\x40\x00\x00\x04 blah blah blah")
   in
   [%expect
     {|
-    (r1 (Error ((query <dummy>) ("Message too long" (message_length 134217729)))))
+    (r1 (Error ((query <dummy>) ("Message too long" (message_length 1073741829)))))
     close_finished is determined with an error
     (outer_result (Ok _))
     |}];

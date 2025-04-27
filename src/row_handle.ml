@@ -12,7 +12,7 @@ module Function = struct
 end
 
 type t =
-  { global_ columns : Column_metadata.t array
+  { global_ columns : Column_metadata.t iarray
   ; datarow : (read, seek) Iobuf.t (** This is internal to the socket's reader *)
   ; mutable last_function : Function.t
   }
@@ -20,14 +20,14 @@ type t =
 module Private = struct
   let create columns ~(local_ datarow) = exclave_
     let num_fields = Iobuf.Consume.uint16_be datarow in
-    if num_fields <> Array.length columns
+    if num_fields <> Iarray.length columns
     then
       raise_s
         [%message
           "number of columns in DataRow message did not match RowDescription"
-            ~row_description:(columns : Column_metadata.t array)
+            ~row_description:(columns : Column_metadata.t iarray)
             (num_fields : int)]
-    else { columns; datarow = Iobuf.read_only_local datarow; last_function = Create }
+    else { columns; datarow = Iobuf.read_only__local datarow; last_function = Create }
   ;;
 end
 
@@ -44,7 +44,7 @@ let unchecked_next
     let hi_bound = Iobuf.Hi_bound.window datarow in
     (* Narrow the window to just this one column. *)
     Iobuf.resize datarow ~len;
-    let result = f (Some (Iobuf.no_seek_local datarow)) in
+    let result = f (Some (Iobuf.no_seek__local datarow)) in
     Iobuf.bounded_flip_hi datarow hi_bound;
     (* Set the window to begin at the next column's length and end at the end of the row. *)
     result)
@@ -73,7 +73,7 @@ let next (local_ t) ~(local_ f : local_ (read, no_seek) Iobuf.t option -> _) =
          (* Narrow the window to just this one column. *)
          Iobuf.resize t.datarow ~len;
          Exn.protect
-           ~f:(fun () -> f (Some (Iobuf.no_seek_local t.datarow)) [@nontail])
+           ~f:(fun () -> f (Some (Iobuf.no_seek__local t.datarow)) [@nontail])
            ~finally:(fun () -> Iobuf.bounded_flip_hi t.datarow hi_bound)))
 ;;
 
@@ -86,7 +86,7 @@ let foldi (local_ t) ~init ~(local_ f) =
          consumed"]
   | Create ->
     t.last_function <- Foldi_or_iteri;
-    Array.fold
+    Iarray.fold
       t.columns
       ~init
       ~f:

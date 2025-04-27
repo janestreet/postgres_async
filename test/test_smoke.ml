@@ -11,7 +11,7 @@ let%expect_test "check that basic query functionality works" =
         "SELECT $1::int"
         ~parameters:[| Some "1234" |]
         ~handle_row:(fun ~column_names:_ ~values ->
-          print_s [%message (values : string option array)])
+          print_s [%message (values : string option iarray)])
     in
     Or_error.ok_exn result;
     [%expect {| (values ((1234))) |}];
@@ -51,7 +51,7 @@ let%expect_test "check that fundamental copy-in features work" =
         "SELECT * FROM x ORDER BY y"
         ~handle_row:(fun ~column_names ~values ->
           print_s
-            [%sexp (Array.zip_exn column_names values : (string * string option) array)])
+            [%sexp (Iarray.zip_exn column_names values : (string * string option) iarray)])
     in
     Or_error.ok_exn result;
     [%expect

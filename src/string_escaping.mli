@@ -18,5 +18,5 @@ module Listen : sig
   val query : channel:string -> string
 end
 
-(** No [escape_value] function is provided, because so far parameters have
-    sufficed for putting values into query strings. *)
+(** No [escape_value] function is provided, because so far parameters have sufficed for
+    putting values into query strings. *)

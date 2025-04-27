@@ -18,23 +18,21 @@ type no_seek := Iobuf.no_seek
     end of the row. This should probably only be used when you're hand-writing both the
     query and the row handler.
 
-
     Important note for users of [next] and [unchecked_next]:
 
     This row handle contains a reference to the raw internal reader buffer of the socket
     reader, so references to underlying buffers should not be held once functions return.
 
     This also means that consumers must consume *every* column of the row, otherwise
-    [Postgres_async] will raise a protcol error.
-*)
+    [Postgres_async] will raise a protcol error. *)
 
 type t
 
-val columns : local_ t -> Column_metadata.t array
+val columns : local_ t -> Column_metadata.t iarray
 
 (** Consume the next column of the row. If there are no remaining columns, return [None].
 
-      If you need to seek in [value], use [Iobuf.sub_shared_local]. *)
+    If you need to seek in [value], use [Iobuf.sub_shared__local]. *)
 val next : local_ t -> f:local_ (local_ (read, no_seek) Iobuf.t option -> 'a) -> 'a option
 
 (** Like [next], but without the check that there are columns remaining in the row, nor a
@@ -49,8 +47,7 @@ val unchecked_next
 
 (** [foldi] is a convenience alias for [unchecked_next] in [Array.iter (columns t)].
     Calling [foldi] after any any other method (besides [columns]) is an error and will
-    raise.
-*)
+    raise. *)
 val foldi
   :  local_ t
   -> init:'acc
@@ -74,7 +71,7 @@ val iteri
 
 module Private : sig
   val create
-    :  Column_metadata.t array
+    :  Column_metadata.t iarray
     -> datarow:local_ ([> read ], seek) Iobuf.t
     -> local_ t
 end

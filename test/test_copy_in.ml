@@ -28,7 +28,7 @@ let print_table postgres table =
       postgres
       (sprintf "SELECT * FROM %s ORDER BY y" table)
       ~handle_row:(fun ~column_names:_ ~values ->
-        print_s [%sexp (values : string option array)])
+        print_s [%sexp (values : string option iarray)])
   in
   Or_error.ok_exn result;
   return ()
@@ -200,7 +200,7 @@ let%expect_test "copy_in_rows: nasty column names" =
         postgres
         {| SELECT * FROM "table-name " ORDER BY k |}
         ~handle_row:(fun ~column_names ~values ->
-          Array.iter (Array.zip_exn column_names values) ~f:(fun (k, v) ->
+          Iarray.iter (Iarray.zip_exn column_names values) ~f:(fun (k, v) ->
             print_s [%sexp (k : string), (v : string option)]))
     in
     Or_error.ok_exn result;
@@ -247,8 +247,8 @@ let%expect_test "copy_in_rows: lots of data" =
         postgres
         {| SELECT COUNT(*), MIN(y), MAX(y), SUM(y), MIN(LENGTH(z)) FROM x |}
         ~handle_row:(fun ~column_names:_ ~values ->
-          let values = Array.map ~f:(fun x -> Option.value_exn x) values in
-          print_s [%sexp (values : string array)])
+          let values = Iarray.map ~f:(fun x -> Option.value_exn x) values in
+          print_s [%sexp (values : string iarray)])
     in
     Or_error.ok_exn result;
     [%expect {| (8192 1 8192 33558528 1024) |}];
@@ -340,7 +340,7 @@ let%expect_test "copy_in_rows with schema prefix" =
         postgres
         "SELECT * FROM my_schema.x ORDER BY y"
         ~handle_row:(fun ~column_names:_ ~values ->
-          print_s [%sexp (values : string option array)])
+          print_s [%sexp (values : string option iarray)])
       >>| Or_error.ok_exn
     in
     [%expect
