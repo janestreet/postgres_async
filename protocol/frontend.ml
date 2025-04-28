@@ -32,8 +32,8 @@ module StartupMessage = struct
       let options = "options"
 
       (** "In addition to the above, other parameters may be listed. Parameter names
-            beginning with _pq_. are reserved for use as protocol extensions, while others
-            are treated as run-time parameters to be set at backend start time." *)
+          beginning with _pq_. are reserved for use as protocol extensions, while others
+          are treated as run-time parameters to be set at backend start time." *)
       let reserved_protocol_extension_prefix = "_pq_."
 
       let is_protocol_extension =
@@ -89,13 +89,12 @@ module StartupMessage = struct
   end
 
   (** The protocol version number. The most significant 16 bits are the major version
-        number (3 for the protocol described here). The least significant 16 bits are the
-        minor version number (0 for the protocol described here). *)
+      number (3 for the protocol described here). The least significant 16 bits are the
+      minor version number (0 for the protocol described here). *)
   let this_protocol = 0x00030000
 
-  (** postgres sets an arbitrary limit on startup packet length to prevent DoS. This
-        limit has been unchanged from 2003-2024 so it seems pretty reasonable to hard code
-        here. *)
+  (** postgres sets an arbitrary limit on startup packet length to prevent DoS. This limit
+      has been unchanged from 2003-2024 so it seems pretty reasonable to hard code here. *)
   let max_startup_packet_length = 10_000
 
   type t = Parameter.Value.t Map.M(Parameter.Name).t

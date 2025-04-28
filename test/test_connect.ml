@@ -1,7 +1,7 @@
 open! Core
 open Async
 
-let () = Backtrace.elide := true
+let () = Dynamic.set_root Backtrace.elide true
 let harness = lazy (Harness.create ())
 
 let with_dummy_server func =
@@ -117,12 +117,12 @@ let try_login ?(user = "postgres") ?password ?(database = "postgres") harness =
         postgres
         "SELECT CURRENT_USER, current_database()"
         ~handle_row:(fun ~column_names:_ ~values ->
-          match values with
-          | [| Some u; Some d |] -> Set_once.set_exn u_d [%here] (u, d)
+          match Iarray.to_array values with
+          | [| Some u; Some d |] -> Set_once.set_exn u_d (u, d)
           | _ -> failwith "bad query response")
     in
     Or_error.ok_exn result;
-    return (Set_once.get_exn u_d [%here])
+    return (Set_once.get_exn u_d)
   in
   let%bind result =
     Postgres_async.with_connection

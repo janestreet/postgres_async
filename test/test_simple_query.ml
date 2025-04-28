@@ -40,8 +40,9 @@ let simple_query postgres ?(show_column_names = false) query_string =
   let handle_row ~column_names ~values =
     match show_column_names with
     | true ->
-      print_s [%sexp (Array.zip_exn column_names values : (string * string option) array)]
-    | false -> print_s [%sexp (values : string option array)]
+      print_s
+        [%sexp (Iarray.zip_exn column_names values : (string * string option) iarray)]
+    | false -> print_s [%sexp (values : string option iarray)]
   in
   let%bind res = Postgres_async.Private.simple_query postgres ~handle_row query_string in
   print_simple_query_result ~query_string res;
@@ -663,14 +664,14 @@ let%expect_test "handle_column" =
       let handle_row ~column_names ~values =
         let column_data =
           Option.map !column_data ~f:(fun arr ->
-            Array.map arr ~f:(fun data ->
+            Iarray.map arr ~f:(fun data ->
               Postgres_async.Column_metadata.(name data, pg_type_oid data)))
         in
         print_s
           [%message
-            (values : string option array)
-              (column_names : string array)
-              (column_data : (string * int) array option)]
+            (values : string option iarray)
+              (column_names : string iarray)
+              (column_data : (string * int) iarray option)]
       in
       let handle_columns arr =
         print_endline "Handle columns called";

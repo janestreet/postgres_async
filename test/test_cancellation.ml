@@ -1,11 +1,11 @@
 open! Core
 open Async
 
-let () = Backtrace.elide := true
+let () = Dynamic.set_root Backtrace.elide true
 let harness = lazy (Harness.create ())
 
-let%expect_test ("Demonstrate that cancelling running queries is possible" [@tags
-                                                                             "disabled"])
+let%expect_test ("Demonstrate that cancelling running queries is possible"
+  [@tags "disabled"])
   =
   let harness = force harness in
   let user = "postgres" in
@@ -27,8 +27,8 @@ let%expect_test ("Demonstrate that cancelling running queries is possible" [@tag
         raise_s
           [%message
             "Unexpectedly produced rows"
-              (column_names : string array)
-              (values : string option array)])
+              (column_names : string iarray)
+              (values : string option iarray)])
   in
   let%bind () =
     Deferred.repeat_until_finished () (fun () ->

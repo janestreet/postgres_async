@@ -352,13 +352,13 @@ let%expect_test "Data Row" =
   let write writer =
     Protocol.Backend.Writer.data_row
       writer
-      (Array.of_list [ Some "Col 1"; Some "Col 2"; None; Some "Col 4" ])
+      (Iarray.of_list [ Some "Col 1"; Some "Col 2"; None; Some "Col 4" ])
   in
   let read_payload ~payload_length:_ iobuf =
-    let (row : string option array) =
+    let (row : string option iarray) =
       Protocol.Backend.DataRow.consume iobuf |> Or_error.ok_exn
     in
-    print_s [%message (row : string option array)]
+    print_s [%message (row : string option iarray)]
   in
   let read = read_message ~read_message_type_char:true ~read_payload in
   let%bind () = roundtrip ~write ~read in

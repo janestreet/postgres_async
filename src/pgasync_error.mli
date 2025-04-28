@@ -5,8 +5,9 @@ module Postgres_field = Postgres_async_protocol.Backend.Error_or_notice_field
 module Sqlstate : sig
   (** PostgreSQL Error Codes.
 
-      Excerpt from {{:https://www.postgresql.org/docs/current/errcodes-appendix.html}
-      PostgreSQL Error Codes}:
+      Excerpt from
+      {{:https://www.postgresql.org/docs/current/errcodes-appendix.html} PostgreSQL Error
+        Codes}:
 
       "All messages emitted by the PostgreSQL server are assigned five-character error
       codes that follow the SQL standard's conventions for “SQLSTATE” codes. Applications
@@ -23,10 +24,11 @@ module Sqlstate : sig
 
       See also:
       {{:https://github.com/postgres/postgres/blob/master/src/backend/utils/errcodes.txt}
-      src/backend/utils/errcodes.txt} *)
+        src/backend/utils/errcodes.txt} *)
 
   type t = private string [@@deriving compare, equal, hash, sexp_of]
 
+  val cardinality_violation : t
   val connection_exception : t
   val sqlclient_unable_to_establish_sqlconnection : t
   val connection_does_not_exist : t
@@ -35,6 +37,10 @@ module Sqlstate : sig
   val protocol_violation : t
   val invalid_password : t
   val invalid_authorization_specification : t
+  val object_not_in_prerequisite_state : t
+  val undefined_object : t
+  val wrong_object_type : t
+  val syntax_error : t
 end
 
 type t [@@deriving sexp_of]

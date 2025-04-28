@@ -1,7 +1,7 @@
 open! Core
 open Async
 
-let () = Backtrace.elide := true
+let () = Dynamic.set_root Backtrace.elide true
 let harness = lazy (Harness.create ())
 
 let startup_message ?application_name ?replication ?options () =
