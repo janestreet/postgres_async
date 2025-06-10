@@ -143,11 +143,8 @@ module StartupMessage = struct
     (* protocol version number: *)
     4
     (* parameters: *)
-    + Map.sumi
-        (module Int)
-        t
-        ~f:(fun ~key ~data ->
-          Parameter.Name.payload_length key + Parameter.Value.payload_length data)
+    + Map.sumi (module Int) t ~f:(fun ~key ~data ->
+      Parameter.Name.payload_length key + Parameter.Value.payload_length data)
     (* trailing null byte *)
     + 1
   ;;
