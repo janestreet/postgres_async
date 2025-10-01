@@ -73,7 +73,7 @@ module StartupMessage : sig
     -> t
 
   val of_parameters_exn : string String.Map.t -> t
-  val consume : (t Or_error.t, [> read ], seek) Iobuf.Consume.t
+  val consume : (t Or_error.t, [> read ], seek, Iobuf.global) Iobuf.Consume.t
 end
 
 module PasswordMessage : sig

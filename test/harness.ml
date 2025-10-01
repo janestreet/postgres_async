@@ -10,9 +10,14 @@ type t =
 
 let postgres_bins =
   lazy
-    (let candidates = [ "/usr/pgsql-12/bin"; "/usr/pgsql-13/bin" ] in
+    (let candidates =
+       [ Postgres_version.Paths.bin_dir ~package_version:V12_10
+       ; Postgres_version.Paths.bin_dir ~package_version:V13_15
+       ; Postgres_version.Paths.bin_dir ~package_version:V17_2
+       ]
+     in
      List.find candidates ~f:(fun dir ->
-       match Sys_unix.is_directory dir with
+       match Sys_unix.is_file (dir ^/ "initdb") with
        | `Yes -> true
        | `No | `Unknown -> false)
      |> Option.value_exn ~message:"could not find a postgresql installation")
@@ -158,7 +163,7 @@ let create_database { socket_dir; port; _ } name =
       ()
       ~prog:(force postgres_bins ^/ "psql")
       ~argv:
-        [ "psql"
+        [ force postgres_bins ^/ "psql"
         ; "-qX"
         ; "-h"
         ; socket_dir
