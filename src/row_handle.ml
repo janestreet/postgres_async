@@ -86,19 +86,12 @@ let foldi (local_ t) ~init ~(local_ f) =
          consumed"]
   | Create ->
     t.last_function <- Foldi_or_iteri;
-    Iarray.fold
-      t.columns
-      ~init
-      ~f:
-        (local_
-        fun acc column ->
-          unchecked_next t ~f:(local_ fun value -> f ~column ~value acc) [@nontail])
+    Iarray.fold t.columns ~init ~f:(local_ fun acc column ->
+      unchecked_next t ~f:(local_ fun value -> f ~column ~value acc) [@nontail])
     [@nontail]
 ;;
 
 let iteri (local_ t) ~(local_ f) =
-  foldi
-    t
-    ~init:()
-    ~f:(local_ fun ~column ~value () -> f ~column ~value [@nontail]) [@nontail]
+  foldi t ~init:() ~f:(local_ fun ~column ~value () -> f ~column ~value [@nontail])
+  [@nontail]
 ;;

@@ -14,8 +14,8 @@ module Null_terminated_string : sig
 
   val validate : t Validate.check
   val payload_length : t -> int
-  val fill : (t, read_write, seek) Iobuf.Fill.t
-  val consume_exn : (t, [> read ], seek) Iobuf.Consume.t
+  val fill : (t, read_write, seek, Iobuf.global) Iobuf.Fill.t
+  val consume_exn : (t, [> read ], seek, Iobuf.global) Iobuf.Consume.t
 
   module Nonempty : sig
     type nonrec t = t [@@deriving compare, equal, hash, quickcheck, sexp]
@@ -24,8 +24,10 @@ module Null_terminated_string : sig
 
     val validate : t -> Validate.t
     val payload_length : t -> int
-    val fill : (t, read_write, seek) Iobuf.Fill.t
-    val consume_exn : ((t, [> `Empty_string ]) result, [> read ], seek) Iobuf.Consume.t
+    val fill : (t, read_write, seek, Iobuf.global) Iobuf.Fill.t
+
+    val consume_exn
+      : ((t, [> `Empty_string ]) result, [> read ], seek, Iobuf.global) Iobuf.Consume.t
   end
 end
 
