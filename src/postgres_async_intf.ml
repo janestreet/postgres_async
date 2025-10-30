@@ -308,7 +308,7 @@ module type Private = sig
   val iter_copy_out
     :  t
     -> query_string:string
-    -> f:((read, Iobuf.seek) Iobuf.t -> unit Deferred.t)
+    -> f:((read, Iobuf.seek, Iobuf.global) Iobuf.t -> unit Deferred.t)
     -> Command_complete.t Or_pgasync_error.t Deferred.t
 
   (** Access to the underlying [Reader]. It is generally not safe to interact with this

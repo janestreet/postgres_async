@@ -32,15 +32,15 @@ module Null_terminated_string : sig
 end
 
 val validate_null_terminated_exn : field_name:string -> string -> unit
-val fill_null_terminated : (read_write, seek) Iobuf.t -> string -> unit
+val fill_null_terminated : (read_write, seek, Iobuf.global) Iobuf.t -> string -> unit
 val uint16_min : int
 val uint16_max : int
 val int32_min : int
 val int32_max : int
-val fill_uint16_be : (read_write, seek) Iobuf.t -> int -> unit
-val fill_int32_be : (read_write, seek) Iobuf.t -> int -> unit
-val find_null_exn : ([> read ], 'a) Iobuf.t -> int
-val consume_cstring_exn : ([> read ], seek) Iobuf.t -> string
+val fill_uint16_be : (read_write, seek, Iobuf.global) Iobuf.t -> int -> unit
+val fill_int32_be : (read_write, seek, Iobuf.global) Iobuf.t -> int -> unit
+val find_null_exn : ([> read ], 'a, Iobuf.global) Iobuf.t -> int
+val consume_cstring_exn : ([> read ], seek, Iobuf.global) Iobuf.t -> string
 
 module type Message_type = sig
   val message_type_char : char option
@@ -49,7 +49,7 @@ module type Message_type = sig
 
   val validate_exn : t -> unit
   val payload_length : t -> int
-  val fill : t -> (read_write, seek) Iobuf.t -> unit
+  val fill : t -> (read_write, seek, Iobuf.global) Iobuf.t -> unit
 end
 
 val write_message
@@ -64,9 +64,9 @@ module CopyData : sig
   include Message_type with type t = string
 
   val message_type_char : char option
-  val skip : ([> read ], seek) Iobuf.t -> unit
+  val skip : ([> read ], seek, Iobuf.global) Iobuf.t -> unit
 end
 
 module CopyDone : sig
-  val consume : ([> read ], seek) Iobuf.t -> unit
+  val consume : ([> read ], seek, Iobuf.global) Iobuf.t -> unit
 end
