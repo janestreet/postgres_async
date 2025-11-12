@@ -33,7 +33,10 @@ val columns : local_ t -> Column_metadata.t iarray
 (** Consume the next column of the row. If there are no remaining columns, return [None].
 
     If you need to seek in [value], use [Iobuf.sub_shared__local]. *)
-val next : local_ t -> f:local_ (local_ (read, no_seek) Iobuf.t option -> 'a) -> 'a option
+val next
+  :  local_ t
+  -> f:local_ (local_ (read, no_seek, Iobuf.global) Iobuf.t option -> 'a)
+  -> 'a option
 
 (** Like [next], but without the check that there are columns remaining in the row, nor a
     check to prevent you from calling [foldi]/[iteri].
@@ -42,7 +45,7 @@ val next : local_ t -> f:local_ (local_ (read, no_seek) Iobuf.t option -> 'a) ->
     safe. *)
 val unchecked_next
   :  local_ t
-  -> f:local_ (local_ (read, no_seek) Iobuf.t option -> 'a)
+  -> f:local_ (local_ (read, no_seek, Iobuf.global) Iobuf.t option -> 'a)
   -> 'a
 
 (** [foldi] is a convenience alias for [unchecked_next] in [Array.iter (columns t)].
@@ -53,7 +56,7 @@ val foldi
   -> init:'acc
   -> f:
        local_ (column:Column_metadata.t
-               -> value:local_ (read, no_seek) Iobuf.t option
+               -> value:local_ (read, no_seek, Iobuf.global) Iobuf.t option
                -> 'acc
                -> 'acc)
   -> 'acc
@@ -63,7 +66,7 @@ val iteri
   :  local_ t
   -> f:
        local_ (column:Column_metadata.t
-               -> value:local_ (read, no_seek) Iobuf.t option
+               -> value:local_ (read, no_seek, Iobuf.global) Iobuf.t option
                -> unit)
   -> unit
 
@@ -72,6 +75,6 @@ val iteri
 module Private : sig
   val create
     :  Column_metadata.t iarray
-    -> datarow:local_ ([> read ], seek) Iobuf.t
+    -> datarow:local_ ([> read ], seek, Iobuf.global) Iobuf.t
     -> local_ t
 end

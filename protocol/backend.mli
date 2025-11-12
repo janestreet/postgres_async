@@ -37,7 +37,7 @@ type focus_on_message_error =
 val constructor_of_char : char -> (constructor, focus_on_message_error) Result.t
 
 val focus_on_message
-  :  ([> read ], seek) Iobuf.t
+  :  ([> read ], seek, Iobuf.global) Iobuf.t
   -> (constructor, focus_on_message_error) Result.t
 
 module Error_or_notice_field : sig
@@ -75,7 +75,7 @@ module ErrorResponse : sig
     }
   [@@deriving sexp_of]
 
-  val consume : ([> read ], seek) Iobuf.t -> t Or_error.t
+  val consume : ([> read ], seek, Iobuf.global) Iobuf.t -> t Or_error.t
 end
 
 module NoticeResponse : sig
@@ -87,7 +87,7 @@ module NoticeResponse : sig
     }
   [@@deriving sexp_of]
 
-  val consume : ([> read ], seek) Iobuf.t -> t Or_error.t
+  val consume : ([> read ], seek, Iobuf.global) Iobuf.t -> t Or_error.t
 end
 
 module AuthenticationRequest : sig
@@ -103,13 +103,13 @@ module AuthenticationRequest : sig
     | GSSContinue of { data : string }
   [@@deriving sexp]
 
-  val consume : ([> read ], seek) Iobuf.t -> t Or_error.t
+  val consume : ([> read ], seek, Iobuf.global) Iobuf.t -> t Or_error.t
 end
 
 module ParameterDescription : sig
   type t = int array
 
-  val consume : ([> read ], seek) Iobuf.t -> t Or_error.t
+  val consume : ([> read ], seek, Iobuf.global) Iobuf.t -> t Or_error.t
 end
 
 module ParameterStatus : sig
@@ -119,13 +119,13 @@ module ParameterStatus : sig
     }
   [@@deriving sexp_of]
 
-  val consume : ([> read ], seek) Iobuf.t -> t Or_error.t
+  val consume : ([> read ], seek, Iobuf.global) Iobuf.t -> t Or_error.t
 end
 
 module BackendKeyData : sig
   type t = Types.backend_key
 
-  val consume : ([> read ], seek) Iobuf.t -> t Or_error.t
+  val consume : ([> read ], seek, Iobuf.global) Iobuf.t -> t Or_error.t
 end
 
 module NotificationResponse : sig
@@ -136,7 +136,7 @@ module NotificationResponse : sig
     }
   [@@deriving sexp_of]
 
-  val consume : ([> read ], seek) Iobuf.t -> t Or_error.t
+  val consume : ([> read ], seek, Iobuf.global) Iobuf.t -> t Or_error.t
 end
 
 module ReadyForQuery : sig
@@ -146,27 +146,27 @@ module ReadyForQuery : sig
     | In_failed_transaction
   [@@deriving sexp_of]
 
-  val consume : ([> read ], seek) Iobuf.t -> t Or_error.t
+  val consume : ([> read ], seek, Iobuf.global) Iobuf.t -> t Or_error.t
 end
 
 module ParseComplete : sig
-  val consume : ([> read ], seek) Iobuf.t -> unit
+  val consume : ([> read ], seek, Iobuf.global) Iobuf.t -> unit
 end
 
 module BindComplete : sig
-  val consume : ([> read ], seek) Iobuf.t -> unit
+  val consume : ([> read ], seek, Iobuf.global) Iobuf.t -> unit
 end
 
 module NoData : sig
-  val consume : ([> read ], seek) Iobuf.t -> unit
+  val consume : ([> read ], seek, Iobuf.global) Iobuf.t -> unit
 end
 
 module EmptyQueryResponse : sig
-  val consume : ([> read ], seek) Iobuf.t -> unit
+  val consume : ([> read ], seek, Iobuf.global) Iobuf.t -> unit
 end
 
 module CloseComplete : sig
-  val consume : ([> read ], seek) Iobuf.t -> unit
+  val consume : ([> read ], seek, Iobuf.global) Iobuf.t -> unit
 end
 
 module RowDescription : sig
@@ -175,14 +175,14 @@ module RowDescription : sig
       [consume] will reject it for simplicity. *)
   type t = Column_metadata.t iarray
 
-  val consume : ([> read ], seek) Iobuf.t -> t Or_error.t
+  val consume : ([> read ], seek, Iobuf.global) Iobuf.t -> t Or_error.t
 end
 
 module DataRow : sig
   type t = string option iarray
 
-  val consume : ([> read ], seek) Iobuf.t -> t Or_error.t
-  val skip : ([> read ], seek) Iobuf.t -> unit
+  val consume : ([> read ], seek, Iobuf.global) Iobuf.t -> t Or_error.t
+  val skip : ([> read ], seek, Iobuf.global) Iobuf.t -> unit
 end
 
 module type CopyResponse = sig
@@ -201,7 +201,7 @@ module type CopyResponse = sig
     }
   [@@deriving compare, sexp_of]
 
-  val consume : ([> read ], seek) Iobuf.t -> t Or_error.t
+  val consume : ([> read ], seek, Iobuf.global) Iobuf.t -> t Or_error.t
 end
 
 module CopyInResponse : CopyResponse
@@ -211,7 +211,7 @@ module CopyBothResponse : CopyResponse
 module CommandComplete : sig
   type t = string
 
-  val consume : ([> read ], seek) Iobuf.t -> t Or_error.t
+  val consume : ([> read ], seek, Iobuf.global) Iobuf.t -> t Or_error.t
 end
 
 module Writer : sig

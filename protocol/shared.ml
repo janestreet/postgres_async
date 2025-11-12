@@ -165,7 +165,7 @@ module type Message_type = sig
 
   val validate_exn : t -> unit
   val payload_length : t -> int
-  val fill : t -> (read_write, Iobuf.seek) Iobuf.t -> unit
+  val fill : t -> (read_write, Iobuf.seek, Iobuf.global) Iobuf.t -> unit
 end
 
 type 'a with_computed_length =

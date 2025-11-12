@@ -623,7 +623,7 @@ module type CopyResponse = sig
     }
   [@@deriving compare, sexp_of]
 
-  val consume : ([> read ], seek) Iobuf.t -> t Or_error.t
+  val consume : ([> read ], seek, Iobuf.global) Iobuf.t -> t Or_error.t
 end
 
 module CopyResponse (A : sig

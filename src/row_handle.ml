@@ -13,7 +13,8 @@ end
 
 type t =
   { global_ columns : Column_metadata.t iarray
-  ; datarow : (read, seek) Iobuf.t (** This is internal to the socket's reader *)
+  ; datarow : (read, seek, Iobuf.global) Iobuf.t
+  (** This is internal to the socket's reader *)
   ; mutable last_function : Function.t
   }
 
@@ -35,7 +36,7 @@ let columns (local_ t) = t.columns
 
 let unchecked_next
   (local_ { datarow; _ })
-  ~(local_ f : local_ (read, no_seek) Iobuf.t option -> _)
+  ~(local_ f : local_ (read, no_seek, Iobuf.global) Iobuf.t option -> _)
   =
   let len = Iobuf.Consume.int32_be datarow in
   if len = -1
@@ -50,7 +51,8 @@ let unchecked_next
     result)
 ;;
 
-let next (local_ t) ~(local_ f : local_ (read, no_seek) Iobuf.t option -> _) =
+let next (local_ t) ~(local_ f : local_ (read, no_seek, Iobuf.global) Iobuf.t option -> _)
+  =
   let () =
     match t.last_function with
     | Create -> t.last_function <- Next

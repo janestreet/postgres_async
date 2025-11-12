@@ -19,7 +19,9 @@ module type S = sig
       [handle_message] must consume (as in [Iobuf.Consume]) all of the bytes of the
       message. *)
   type 'a handle_message :=
-    Postgres_async_protocol.Backend.constructor -> (read, Iobuf.seek) Iobuf.t -> 'a
+    Postgres_async_protocol.Backend.constructor
+    -> (read, Iobuf.seek, Iobuf.global) Iobuf.t
+    -> 'a
 
   type 'a read_messages_result =
     | Connection_closed of Pgasync_error.t
