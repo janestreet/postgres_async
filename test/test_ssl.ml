@@ -35,8 +35,8 @@ let handle_startup_login_and_close reader writer =
     match%bind Reader.read_char reader with
     | `Ok 'X' -> Writer.close writer
     | `Ok _ | `Eof ->
-      (* Even if we don't get a close message here, we still close the writer.
-         This can happen in the "SSL negotiation failure" test below. *)
+      (* Even if we don't get a close message here, we still close the writer. This can
+         happen in the "SSL negotiation failure" test below. *)
       Writer.close writer
   in
   (* Client may decide to send startup message or close its connection based on the ssl

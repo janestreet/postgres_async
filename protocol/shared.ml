@@ -4,8 +4,8 @@ open! Import
 
 (* When [Word_size.word_size = W32], [int] can take at most 31 bits, so the max is 2**30.
 
-   [Iobuf.Consume.int32_be] silently truncates. This is a shame (ideally it would return
-   a [Int63.t]; see the comment at the top of [Int32.t], but otherwise an [Int32.t] would
+   [Iobuf.Consume.int32_be] silently truncates. This is a shame (ideally it would return a
+   [Int63.t]; see the comment at the top of [Int32.t], but otherwise an [Int32.t] would
    certainly suffice) and makes it quite annoying to safely implement something that reads
    32 bit ints on a 32 bit ocaml platform.
 
@@ -97,11 +97,11 @@ let fill_null_terminated iobuf str =
 ;;
 
 (* Type int16 could be used as both unsigned and signed, depending on the context (See
-     pqPutInt/pgGetInt in the interfaces/libpq/fe-misc.c).
+   pqPutInt/pgGetInt in the interfaces/libpq/fe-misc.c).
 
-     For example, data type size in RowDescription could be negative, but parameter count
-     in Bind message could only be positive, and so it's maximum value is 65535. Our
-     implementation currently only needs unsigned int16 values *)
+   For example, data type size in RowDescription could be negative, but parameter count in
+   Bind message could only be positive, and so it's maximum value is 65535. Our
+   implementation currently only needs unsigned int16 values *)
 let uint16_min = 0
 let uint16_max = 65535
 
@@ -213,15 +213,15 @@ module No_arg = struct
   ;;
 end
 
-(* Both the backend and frontend use the same format for [CopyData] and
-     [CopyDone] messages, hence they are placed in [Shared]. *)
+(* Both the backend and frontend use the same format for [CopyData] and [CopyDone]
+   messages, hence they are placed in [Shared]. *)
 module CopyData = struct
   let message_type_char = Some 'd'
 
   type t = string
 
-  (* After [focus_on_message] seeks over the type and length, 'CopyData'
-       messages are simply just the payload bytes. *)
+  (* After [focus_on_message] seeks over the type and length, 'CopyData' messages are
+     simply just the payload bytes. *)
   let skip iobuf = Iobuf.advance iobuf (Iobuf.length iobuf)
   let validate_exn (_ : t) = ()
   let payload_length t = String.length t

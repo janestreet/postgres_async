@@ -77,11 +77,11 @@ let query_exn
        List.exists ~f:(fun prefix -> String.is_prefix str ~prefix) [ "SELECT"; "WITH" ]
      with
      | false ->
-       (* For non-read-only commands, choose at random which implementation to use.  *)
+       (* For non-read-only commands, choose at random which implementation to use. *)
        run ~zero_copy:(Random.bool ())
      | true ->
        (* For read-only commands, run twice as an easy way to confirm these interfaces are
-         equivalent. *)
+          equivalent. *)
        let%bind () = run ~zero_copy:false in
        let output1 = Expect_test_helpers_core.expect_test_output () in
        let%bind () = run ~zero_copy:true in

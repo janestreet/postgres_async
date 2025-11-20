@@ -24,7 +24,7 @@ let read_message iobuf ~read_message_type_char ~read_payload =
   print_s [%message (message_char : Char.t option)];
   let length = Iobuf.Consume.int32_be iobuf in
   print_s [%message (length : int)];
-  (* Length includes itself*)
+  (* Length includes itself *)
   let payload_length = length - 4 in
   read_payload ~payload_length iobuf
 ;;
@@ -83,8 +83,7 @@ let%expect_test "Startup with Params" =
   Deferred.unit
 ;;
 
-(* Note : options is deprecated in favor of runtime parameters according
-   to postgres docs *)
+(* Note : options is deprecated in favor of runtime parameters according to postgres docs *)
 
 let%expect_test "Startup with Options" =
   let%bind () =

@@ -70,9 +70,9 @@ let create ?(extra_server_args = []) () =
      [temp_socket] too.
 
      By binding the same port on [127.0.0.2] and _then_ switching REUSEADDR on
-     [temp_socket2] off, it will not be possible to bind to [0.0.0.0:port], since such
-     a bind will conflict with the [127.0.0.2:port] socket. In particular, another
-     instance of this test will not re-use the port. But also other processes asking for
+     [temp_socket2] off, it will not be possible to bind to [0.0.0.0:port], since such a
+     bind will conflict with the [127.0.0.2:port] socket. In particular, another instance
+     of this test will not re-use the port. But also other processes asking for
      [0.0.0.0:ephemeral] will not be given [port].
 
      A process asking for [127.0.0.1:ephemeral] without REUSEADDR set be handed our port.

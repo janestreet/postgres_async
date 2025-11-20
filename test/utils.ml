@@ -1,8 +1,8 @@
 open Core
 open! Async
 
-(* Most of the error message from postgres is not stable wrt. server version.
-   This is probably good enough. *)
+(* Most of the error message from postgres is not stable wrt. server version. This is
+   probably good enough. *)
 let rec delete_unstable_bits_of_error : Sexp.t -> Sexp.t =
   let is_code_pair : Sexp.t -> bool = function
     | List [ Atom "Code"; Atom _ ] -> true
