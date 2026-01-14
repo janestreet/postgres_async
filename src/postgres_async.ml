@@ -331,9 +331,9 @@ module Expert_with_command_complete = struct
   let notification_bus t channel =
     Hashtbl.find_or_add t.notification_buses channel ~default:(fun () ->
       Bus.create_exn
-        Arity2
         ~on_subscription_after_first_write:Allow
-        ~on_callback_raise:Error.raise)
+        ~on_callback_raise:Error.raise
+        ())
   ;;
 
   (* [Message_reading] hides the helper functions of [read_messages] from the below. *)
@@ -562,7 +562,7 @@ module Expert_with_command_complete = struct
                   equal field Line || equal field File || equal field Routine))
           else all_fields
         in
-        [%log.global.info
+        [%log.info
           "Postgres NoticeResponse"
             ~_:(all_fields : (Protocol.Backend.Error_or_notice_field.t * string) list)];
         Ok ()
@@ -591,7 +591,7 @@ module Expert_with_command_complete = struct
         let bus = notification_bus t channel in
         (match Bus.num_subscribers bus with
          | 0 ->
-           [%log.global.error
+           [%log.error
              "Postgres NotificationResponse on channel that no callbacks are listening to"
                (channel : Notification_channel.t)]
          | _ -> Bus.write2 bus pid payload);
