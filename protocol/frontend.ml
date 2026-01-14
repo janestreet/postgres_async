@@ -10,8 +10,8 @@ module SSLRequest = struct
   let payload_length () = 4
   let validate_exn () = ()
 
-  (* These values look like dummy ones, but are the ones given in the postgres
-       spec; the goal is to never collide with any protocol versions. *)
+  (* These values look like dummy ones, but are the ones given in the postgres spec; the
+     goal is to never collide with any protocol versions. *)
   let fill () iobuf =
     Iobuf.Fill.int16_be_trunc iobuf 1234;
     Iobuf.Fill.int16_be_trunc iobuf 5679
@@ -502,7 +502,7 @@ module CancelRequest = struct
   let payload_length (_ : t) =
     (* Cancel request code = 12345678 *)
     4
-    + (* Pid*)
+    + (* Pid *)
     4
     + (* Secret *)
     4

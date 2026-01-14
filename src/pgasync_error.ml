@@ -2,7 +2,7 @@ open Core
 module ErrorResponse = Postgres_async_protocol.Backend.ErrorResponse
 module Postgres_field = Postgres_async_protocol.Backend.Error_or_notice_field
 
-(* The MLI introduces the [Pgasync_error] type; it's our place to store the generic
+(*=The MLI introduces the [Pgasync_error] type; it's our place to store the generic
      error, and the error code _if_ we know it.
 
      Now, on the subject of error handling more generally, there are a few axes on which
@@ -108,10 +108,9 @@ let create_s ?error_code s = of_error ?error_code (Error.create_s s)
 let of_error_response (error_response : ErrorResponse.t) =
   let error =
     (* We omit some of the particularly noisy and uninteresting fields from the error
-         message that will be displayed to users.
+       message that will be displayed to users.
 
-         Note that as-per [ErrorResponse.t]'s docstring, [Code] is included in this
-         list. *)
+       Note that as-per [ErrorResponse.t]'s docstring, [Code] is included in this list. *)
     let interesting_fields =
       List.filter error_response.all_fields ~f:(fun (field, value) ->
         match field with
@@ -168,10 +167,9 @@ let query_tag ?parameters ~query_string t =
      in
      (* We want to display the long query like this:
 
-            <prefix>[error position]<suffix>
+        <prefix>[error position]<suffix>
 
-            where combined length of lead + prefix + suffix is less than
-            max_query_length *)
+        where combined length of lead + prefix + suffix is less than max_query_length *)
      let half = !max_query_length / 2 in
      let prefix_start = max 0 (position - half) in
      let query_length = String.length query_string in

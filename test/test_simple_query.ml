@@ -391,8 +391,8 @@ let%expect_test "COPYIN is gracefully handled in a chained statement" =
        (query_string " INSERT INTO a VALUES (1), (2) ")
        (commands_complete (((tag INSERT) (rows (2))))))
       |}];
-    (* Should only return an error message since the error at the first statement
-       prevents the SELECT from running*)
+    (* Should only return an error message since the error at the first statement prevents
+       the SELECT from running *)
     let%bind () = query "COPY a FROM STDIN; SELECT * FROM a" in
     [%expect
       {|
@@ -481,8 +481,8 @@ let%expect_test "COPY OUT is gracefully handled in a chained statement" =
        (query_string " INSERT INTO a VALUES (1), (2) ")
        (commands_complete (((tag INSERT) (rows (2))))))
       |}];
-    (* Should still run the full statement since the client-side prevents COPY OUT,
-       not the server *)
+    (* Should still run the full statement since the client-side prevents COPY OUT, not
+       the server *)
     let%bind () = query "COPY a TO STDOUT; SELECT * FROM a" in
     [%expect
       {|

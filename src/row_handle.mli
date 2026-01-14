@@ -64,7 +64,7 @@ val iteri
         -> unit)
   -> unit
 
-(** / **)
+(**/**)
 
 module Private : sig
   val create

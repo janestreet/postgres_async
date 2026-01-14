@@ -240,8 +240,8 @@ module Expert_with_command_complete = struct
 
     (* To issue a cancel request, the frontend opens a new connection to the server and
        sends a CancelRequest message, rather than the StartupMessage message that would
-       ordinarily be sent across a new connection. The server will process this request and
-       then close the connection. For security reasons, no direct reply is made to the
+       ordinarily be sent across a new connection. The server will process this request
+       and then close the connection. For security reasons, no direct reply is made to the
        cancel request message.
     *)
     let pq_cancel t =
@@ -331,9 +331,9 @@ module Expert_with_command_complete = struct
   let notification_bus t channel =
     Hashtbl.find_or_add t.notification_buses channel ~default:(fun () ->
       Bus.create_exn
-        Arity2
         ~on_subscription_after_first_write:Allow
-        ~on_callback_raise:Error.raise)
+        ~on_callback_raise:Error.raise
+        ())
   ;;
 
   (* [Message_reading] hides the helper functions of [read_messages] from the below. *)
@@ -345,7 +345,7 @@ module Expert_with_command_complete = struct
       | Continue
       | Protocol_error of Pgasync_error.t
 
-    (* [Reader.read_one_iobuf_at_a_time] hands us 'chunks' to [handle_chunk]. A chunk is
+    (*=[Reader.read_one_iobuf_at_a_time] hands us 'chunks' to [handle_chunk]. A chunk is
        an iobuf, where the window of the iobuf is set to the data that has been pulled
        from the OS into the [Reader.t] but not yet consumed by the application. Said
        window 'chunk' contains messages, potentially a partial message at the end in case
@@ -515,9 +515,9 @@ module Expert_with_command_complete = struct
       | (Closed_gracefully | Closing), false ->
         return (force can't_read_because_closed_and_eof)
       | Open, _ | (Closed_gracefully | Closing), true ->
-        (* [t.state] = [Open _] implies [t.reader] is not closed, and so this function will
-           not raise. Note further that if the reader is closed _while_ we are reading, it
-           does not raise. *)
+        (* [t.state] = [Open _] implies [t.reader] is not closed, and so this function
+           will not raise. Note further that if the reader is closed _while_ we are
+           reading, it does not raise. *)
         let on_protocol_error err =
           failed t err;
           Connection_closed err
@@ -527,9 +527,9 @@ module Expert_with_command_complete = struct
          | `Stopped (`Done res) -> Done res
          | (`Eof_with_unconsumed_data _ | `Eof) as res ->
            (* In case of some failure (writer failure, including asynchronous) the reader
-               will be closed and reads will return Eof. So, after the read result is
-               determined, we check [t.state], so that we can give a better error message
-               than "unexpected EOF". *)
+              will be closed and reads will return Eof. So, after the read result is
+              determined, we check [t.state], so that we can give a better error message
+              than "unexpected EOF". *)
            (match t.state with
             | Failed { error; _ } -> Connection_closed error
             | Closing | Closed_gracefully -> force can't_read_because_closed_and_eof
@@ -562,7 +562,7 @@ module Expert_with_command_complete = struct
                   equal field Line || equal field File || equal field Routine))
           else all_fields
         in
-        [%log.global.info
+        [%log.info
           "Postgres NoticeResponse"
             ~_:(all_fields : (Protocol.Backend.Error_or_notice_field.t * string) list)];
         Ok ()
@@ -591,7 +591,7 @@ module Expert_with_command_complete = struct
         let bus = notification_bus t channel in
         (match Bus.num_subscribers bus with
          | 0 ->
-           [%log.global.error
+           [%log.error
              "Postgres NotificationResponse on channel that no callbacks are listening to"
                (channel : Notification_channel.t)]
          | _ -> Bus.write2 bus pid payload);
@@ -830,11 +830,10 @@ module Expert_with_command_complete = struct
          | `Eof ->
            return (error_s [%message "Reader closed before ssl negotiation response"])
          | `Ok 'S' ->
-           (* [Prefer] and [Require] do not demand certificate verification, which is
-              why you see us assign [Verify_none] and a [verify_callback] that
-              unconditionally returns [Ok ()]. We'd need to revisit that if we added
-              [Ssl_mode.t] constructors akin to libpq's [Verify_ca] or
-              [Verify_full]. *)
+           (* [Prefer] and [Require] do not demand certificate verification, which is why
+              you see us assign [Verify_none] and a [verify_callback] that unconditionally
+              returns [Ok ()]. We'd need to revisit that if we added [Ssl_mode.t]
+              constructors akin to libpq's [Verify_ca] or [Verify_full]. *)
            Monitor.try_with_or_error ~rest:`Log (fun () ->
              let%bind t, (_ : [ `Connection_closed of unit Deferred.t ]) =
                (* Async_ssl (and its use of Writer.pipe) internally propagates pushback
@@ -890,9 +889,8 @@ module Expert_with_command_complete = struct
                       tcp_reader
                       tcp_writer)))
          | `Ok response_char ->
-           (* 'E' (or potentially another character?) can indicate that the server
-              doesn't understand the request, and we must re-start the connection from
-              scratch.
+           (* 'E' (or potentially another character?) can indicate that the server doesn't
+              understand the request, and we must re-start the connection from scratch.
 
               This should only happen for ancient versions of postgres, which are not
               supported by this library. *)
@@ -1120,7 +1118,7 @@ module Expert_with_command_complete = struct
       raise exn
   ;;
 
-  (* We use the extended query protocol rather than the simple query protocol because it
+  (*=We use the extended query protocol rather than the simple query protocol because it
      provides support for [parameters] (via the 'bind' message), and because it guarantees
      that only a SQL statement is executed per query, which simplifies the state machine
      we need to use to handle the responses significantly.
@@ -1211,8 +1209,8 @@ module Expert_with_command_complete = struct
        - COMMAND OID ROWS
        - COMMAND ROWS
 
-       we remove both OID and ROWS from the tag, and throw OID away as it is always 0 after
-       pg11 (where WITH OIDS was removed).
+       we remove both OID and ROWS from the tag, and throw OID away as it is always 0
+       after pg11 (where WITH OIDS was removed).
     *)
     match String.rsplit2 tag ~on:' ' with
     | None ->
@@ -1670,9 +1668,9 @@ module Expert_with_command_complete = struct
     ;;
   end
 
-  (* Runs through the state-machine for the messages returned from the server
-     as a result of a simple query. Returns whether the query was successfully
-     executed or, if not, an appropriate error message. *)
+  (* Runs through the state-machine for the messages returned from the server as a result
+     of a simple query. Returns whether the query was successfully executed or, if not, an
+     appropriate error message. *)
   let handle_simple_query_messages ?pushback t ~handle_columns ~handle_row =
     let current_row_description = ref None in
     let status =
@@ -1681,9 +1679,9 @@ module Expert_with_command_complete = struct
     read_messages ?pushback t ~handle_message:(fun msg_type iobuf ->
       match (msg_type : Protocol.Backend.constructor) with
       | CommandComplete ->
-        (* A RowDescription can be followed by multiple DataRows, and then
-           a CommandComplete. Only reset [current_row_description] when we know
-           all DataRows have been received. *)
+        (* A RowDescription can be followed by multiple DataRows, and then a
+           CommandComplete. Only reset [current_row_description] when we know all DataRows
+           have been received. *)
         current_row_description := None;
         (match Protocol.Backend.CommandComplete.consume iobuf with
          | Error err -> protocol_error_of_error err
@@ -1733,9 +1731,9 @@ module Expert_with_command_complete = struct
            let error_response =
              Pgasync_error.of_error_response error_response |> Pgasync_error.tag ~tag
            in
-           (* When ErrorResponse is sent, it is immediately followed by a
-              ReadyForQuery since the rest of the query is terminated. Save
-              this code and then return it in the future.*)
+           (* When ErrorResponse is sent, it is immediately followed by a ReadyForQuery
+              since the rest of the query is terminated. Save this code and then return it
+              in the future. *)
            status
            := Simple_query_status.update_result
                 !status
@@ -1749,9 +1747,8 @@ module Expert_with_command_complete = struct
              "Command ignored: COPY FROM STDIN is not appropriate for \
               [Postgres_async.simple_query]"
            in
-           (* Abort COPY IN command on the server side. An ErrorResponse
-              will be returned by the server following this which will
-              terminate the query. *)
+           (* Abort COPY IN command on the server side. An ErrorResponse will be returned
+              by the server following this which will terminate the query. *)
            catch_write_errors t ~flush_message:Not_required ~f:(fun writer ->
              Protocol.Frontend.Writer.copy_fail writer { reason });
            let warning = Error.create_s [%message reason] in
@@ -1761,8 +1758,7 @@ module Expert_with_command_complete = struct
         (match Protocol.Backend.CopyOutResponse.consume iobuf with
          | Error err -> protocol_error_of_error err
          | Ok (_ : Protocol.Backend.CopyOutResponse.t) ->
-           (* Store the error messsage and read remaining messages for
-              COPY OUT *)
+           (* Store the error messsage and read remaining messages for COPY OUT *)
            let warning =
              Error.create_s
                [%message
@@ -1927,7 +1923,8 @@ module Expert_with_command_complete = struct
           read_messages' t ~handle_message:(fun msg_type iobuf ->
             match msg_type with
             | ErrorResponse ->
-              (* [ErrorResponse] terminates copy-out mode; no separate [CopyDone] is required. *)
+              (* [ErrorResponse] terminates copy-out mode; no separate [CopyDone] is
+                 required. *)
               return
                 (match Protocol.Backend.ErrorResponse.consume iobuf with
                  | Error err -> protocol_error_of_error err
