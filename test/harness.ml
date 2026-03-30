@@ -39,12 +39,14 @@ let socket_dir =
 let tempfiles_dir = Filename.temp_dir_name
 
 let fork_redirect_exec ~prog ~args ~stdouterr_file =
-  match Unix.fork () with
-  | `In_the_parent pid -> pid
-  | `In_the_child ->
-    Unix.dup2 ~src:stdouterr_file ~dst:Unix.stdout ();
-    Unix.dup2 ~src:stdouterr_file ~dst:Unix.stderr ();
-    never_returns (Unix.exec ~prog ~argv:(prog :: args) ())
+  Unix.fork_exec
+    ~prog
+    ~argv:(prog :: args)
+    ~preexec:
+      [ Unix.Pre_exec_command.Fd_dup2 { src = stdouterr_file; dst = Unix.stdout }
+      ; Unix.Pre_exec_command.Fd_dup2 { src = stdouterr_file; dst = Unix.stderr }
+      ]
+    ()
 ;;
 
 let create ?(extra_server_args = []) () =
