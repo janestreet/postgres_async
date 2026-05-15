@@ -34,22 +34,24 @@ end
 
 let columns t = t.columns
 
-let unchecked_next { datarow; _ } ~(f : (read, no_seek, Iobuf.global) Iobuf.t option -> _)
+let unchecked_next
+  { datarow; _ }
+  ~(f : (read, no_seek, Iobuf.global) Iobuf.t or_null -> _)
   =
   let len = Iobuf.Consume.int32_be datarow in
   if len = -1
-  then f None
+  then f Null
   else (
     let hi_bound = Iobuf.Hi_bound.window datarow in
     (* Narrow the window to just this one column. *)
     Iobuf.resize datarow ~len;
-    let result = f (Some (Iobuf.no_seek__local datarow)) in
+    let result = f (This (Iobuf.no_seek__local datarow)) in
     Iobuf.bounded_flip_hi datarow hi_bound;
     (* Set the window to begin at the next column's length and end at the end of the row. *)
     result)
 ;;
 
-let next t ~(f : (read, no_seek, Iobuf.global) Iobuf.t option -> _) =
+let next t ~(f : (read, no_seek, Iobuf.global) Iobuf.t or_null -> _) =
   let () =
     match t.last_function with
     | Create -> t.last_function <- Next
@@ -61,18 +63,18 @@ let next t ~(f : (read, no_seek, Iobuf.global) Iobuf.t option -> _) =
            [Row_handle.foldi]/[Row_handle.iteri]"]
   in
   if Iobuf.is_empty t.datarow
-  then None
+  then Null
   else
-    Some
+    This
       (let len = Iobuf.Consume.int32_be t.datarow in
        if len = -1
-       then f None
+       then f Null
        else (
          let hi_bound = Iobuf.Hi_bound.window t.datarow in
          (* Narrow the window to just this one column. *)
          Iobuf.resize t.datarow ~len;
          Exn.protect
-           ~f:(fun () -> f (Some (Iobuf.no_seek__local t.datarow)) [@nontail])
+           ~f:(fun () -> f (This (Iobuf.no_seek__local t.datarow)) [@nontail])
            ~finally:(fun () -> Iobuf.bounded_flip_hi t.datarow hi_bound)))
 ;;
 

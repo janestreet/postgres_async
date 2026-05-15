@@ -1,8 +1,7 @@
 open! Core
 module Column_metadata := Postgres_async_protocol.Column_metadata
 
-type seek := Iobuf.seek
-type no_seek := Iobuf.no_seek
+type value := (read, Iobuf.no_seek, Iobuf.global) Iobuf.t or_null
 
 (** The safest interfaces to this module are [iteri] and [foldi]. They should generally be
     preferred unless you have some compiler-aided check to ensure you are accessing
@@ -33,42 +32,30 @@ val columns : t -> Column_metadata.t iarray
 (** Consume the next column of the row. If there are no remaining columns, return [None].
 
     If you need to seek in [value], use [Iobuf.sub_shared__local]. *)
-val next : t -> f:((read, no_seek, Iobuf.global) Iobuf.t option -> 'a) -> 'a option
+val next : t -> f:(value -> 'a) -> 'a or_null
 
 (** Like [next], but without the check that there are columns remaining in the row, nor a
     check to prevent you from calling [foldi]/[iteri].
 
     If you can guarantee that you call [unchecked_next] exactly once per column, this is
     safe. *)
-val unchecked_next : t -> f:((read, no_seek, Iobuf.global) Iobuf.t option -> 'a) -> 'a
+val unchecked_next : 'a. t -> f:(value -> 'a) -> 'a
 
 (** [foldi] is a convenience alias for [unchecked_next] in [Array.iter (columns t)].
     Calling [foldi] after any any other method (besides [columns]) is an error and will
     raise. *)
 val foldi
-  :  t
-  -> init:'acc
-  -> f:
-       (column:Column_metadata.t
-        -> value:(read, no_seek, Iobuf.global) Iobuf.t option
-        -> 'acc
-        -> 'acc)
-  -> 'acc
+  : 'acc.
+  t -> init:'acc -> f:(column:Column_metadata.t -> value:value -> 'acc -> 'acc) -> 'acc
 
 (** see [foldi] *)
-val iteri
-  :  t
-  -> f:
-       (column:Column_metadata.t
-        -> value:(read, no_seek, Iobuf.global) Iobuf.t option
-        -> unit)
-  -> unit
+val iteri : t -> f:(column:Column_metadata.t -> value:value -> unit) -> unit
 
 (**/**)
 
 module Private : sig
   val create
     :  Column_metadata.t iarray
-    -> datarow:([> read ], seek, Iobuf.global) Iobuf.t
+    -> datarow:([> read ], Iobuf.seek, Iobuf.global) Iobuf.t
     -> t
 end

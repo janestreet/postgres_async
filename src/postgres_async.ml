@@ -933,7 +933,15 @@ module Expert_with_command_complete = struct
         Tcp.connect ~buffer_age_limit ~interrupt server)
     with
     | Error _ as result -> return result
-    | Ok (_sock, tcp_reader, tcp_writer) ->
+    | Ok (sock, tcp_reader, tcp_writer) ->
+      let%bind () =
+        (* Set SO_KEEPALIVE only for inet sockets, not unix sockets, to match the behavior
+           of libpq (see [postgres/src/interfaces/libpq/fe-connect.c]) *)
+        match%map Tcp.Where_to_connect.remote_address server with
+        | `Unix (_ : string) -> ()
+        | `Inet (_ : Async.Unix.Inet_addr.t * int) ->
+          Socket.setopt sock Socket.Opt.keepalive true
+      in
       (match%bind
          maybe_ssl_wrap
            ~where_to_connect
@@ -2319,6 +2327,8 @@ module Expert = struct
 end
 
 type t = Expert.t [@@deriving sexp_of]
+
+let backend_key = Expert.backend_key
 
 let connect
   ?interrupt
