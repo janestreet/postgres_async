@@ -24,15 +24,16 @@ let row_handler ~show_column_names =
     Postgres_async.Row_handle.foldi row_handle ~init:() ~f:(fun ~column ~value () ->
       let value =
         match value with
-        | None -> None
-        | Some iobuf -> Some (Iobuf.Peek.To_string.subo iobuf)
+        | Null -> Null
+        | This iobuf -> This (Iobuf.Peek.To_string.subo iobuf)
       in
       let sexp =
         if show_column_names
         then
           [%sexp
-            (Postgres_async.Column_metadata.name column : string), (value : string option)]
-        else [%sexp (value : string option)]
+            (Postgres_async.Column_metadata.name column : string)
+            , (value : string or_null)]
+        else [%sexp (value : string or_null)]
       in
       Format.printf "%a%a" print_cut_after_first first Sexp.pp_hum sexp);
     Format.printf ")@]@;")

@@ -128,7 +128,7 @@ module type S = sig
     -> t
     -> table_name:string
     -> column_names:string list
-    -> feed_data:(unit -> string option array feed_data_result)
+    -> feed_data:(unit -> string or_null array feed_data_result)
     -> (command_complete, error) Result.t Deferred.t
 
   (** [listen_to_notifications] executes a query to subscribe you to notifications on
@@ -344,8 +344,14 @@ module type Postgres_async = sig
   module Command_complete : Command_complete.Public
   module Row_handle = Row_handle
   module Ssl_mode = Ssl_mode
+  module Types = Types
 
   type t [@@deriving sexp_of]
+
+  (** Returns the backend key sent by the server during connection startup, if one has
+      been received. The [pid] field can be used to correlate client-side work with
+      server-side Postgres activity for the lifetime of this connection. *)
+  val backend_key : t -> Types.backend_key option
 
   module type S := S with type t := t
 

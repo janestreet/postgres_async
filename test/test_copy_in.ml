@@ -41,9 +41,9 @@ let%expect_test "copy_in_rows" =
     let%bind result =
       let rows =
         Queue.of_list
-          [ [| Some "one"; Some "1" |]
-          ; [| None; Some "2" |]
-          ; [| Some "three"; Some "3" |]
+          [ [| This "one"; This "1" |]
+          ; [| Null; This "2" |]
+          ; [| This "three"; This "3" |]
           ]
       in
       Postgres_async.copy_in_rows
@@ -76,9 +76,9 @@ let%expect_test "copy_in_rows, schema" =
     let%bind result =
       let rows =
         Queue.of_list
-          [ [| Some "one"; Some "1" |]
-          ; [| None; Some "2" |]
-          ; [| Some "three"; Some "3" |]
+          [ [| This "one"; This "1" |]
+          ; [| Null; This "2" |]
+          ; [| This "three"; This "3" |]
           ]
       in
       Postgres_async.copy_in_rows
@@ -112,20 +112,20 @@ let%expect_test "copy_in_rows: nasty characters" =
     let%bind result =
       let rows =
         Queue.of_list
-          [ [| Some "1"; Some "\n"; None |]
-          ; [| Some "2"; Some "\\N"; None |]
-          ; [| Some "3"; Some "\t"; None |]
-          ; [| Some "4"; Some "\\t"; None |]
-          ; [| Some "5"; Some ","; None |]
-          ; [| Some "6"; Some ""; None |]
-          ; [| Some "7"; Some "\\"; None |]
-          ; [| Some "8"; Some "\\x61"; None |]
-          ; [| Some "9"; Some ""; None |]
-          ; [| Some "10"; Some "\x00"; None |]
-          ; [| Some "11"; None; Some "asdf" |]
-          ; [| Some "12"; None; Some "\n" |]
-          ; [| Some "13"; None; Some "\\x00" |]
-          ; [| Some "14"; None; Some "\\x61" |]
+          [ [| This "1"; This "\n"; Null |]
+          ; [| This "2"; This "\\N"; Null |]
+          ; [| This "3"; This "\t"; Null |]
+          ; [| This "4"; This "\\t"; Null |]
+          ; [| This "5"; This ","; Null |]
+          ; [| This "6"; This ""; Null |]
+          ; [| This "7"; This "\\"; Null |]
+          ; [| This "8"; This "\\x61"; Null |]
+          ; [| This "9"; This ""; Null |]
+          ; [| This "10"; This "\x00"; Null |]
+          ; [| This "11"; Null; This "asdf" |]
+          ; [| This "12"; Null; This "\n" |]
+          ; [| This "13"; Null; This "\\x00" |]
+          ; [| This "14"; Null; This "\\x61" |]
           ]
       in
       Postgres_async.copy_in_rows
@@ -191,7 +191,7 @@ let%expect_test "copy_in_rows: nasty column names" =
           | true -> Finished
           | false ->
             sent_row := true;
-            Data [| Some "1"; Some "A"; Some "B"; Some "C"; Some "D"; Some "E" |])
+            Data [| This "1"; This "A"; This "B"; This "C"; This "D"; This "E" |])
     in
     Or_error.ok_exn result;
     [%expect {| |}];
@@ -238,7 +238,7 @@ let%expect_test "copy_in_rows: lots of data" =
                Wait ((force Utils.do_an_epoll) ())
              | false ->
                incr counter;
-               Data [| Some (Int.to_string !counter); Some one_kb |]))
+               Data [| This (Int.to_string !counter); This one_kb |]))
     in
     Or_error.ok_exn result;
     [%expect {| |}];
@@ -323,7 +323,7 @@ let%expect_test "copy_in_rows with schema prefix" =
     in
     [%expect {| |}];
     let%bind result =
-      let rows = Queue.of_list [ [| Some "1" |]; [| Some "2" |] ] in
+      let rows = Queue.of_list [ [| This "1" |]; [| This "2" |] ] in
       Postgres_async.copy_in_rows
         postgres
         ~table_name:"my_schema.x"

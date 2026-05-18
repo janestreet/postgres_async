@@ -2,7 +2,7 @@ open! Core
 
 module type Public = sig
   (** Contains information on the name and type of a column in query results *)
-  type t
+  type t : immutable_data
 
   val name : t -> string
 
@@ -12,7 +12,7 @@ module type Public = sig
 end
 
 module type Column_metadata = sig
-  type t [@@deriving sexp_of]
+  type t : immutable_data [@@deriving sexp_of]
 
   val create : name:string -> format:[ `Text ] -> pg_type_oid:int -> t
 

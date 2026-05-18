@@ -11,7 +11,7 @@ module Copy_in : sig
     -> string
 
   (** [row_to_string] includes the terminating '\n' *)
-  val row_to_string : string option array -> string
+  val row_to_string : string or_null array -> string
 end
 
 module Listen : sig
