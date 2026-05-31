@@ -140,14 +140,15 @@ let[@inline always] fill_int32_be iobuf value =
 ;;
 
 let find_null_exn iobuf =
-  let rec loop ~iobuf ~length ~pos =
-    if Char.( = ) (Iobuf.Peek.char iobuf ~pos) '\x00'
-    then pos
-    else if pos > length - 1
-    then failwith "find_null_exn could not find \\x00"
-    else loop ~iobuf ~length ~pos:(pos + 1)
-  in
-  loop ~iobuf ~length:(Iobuf.length iobuf) ~pos:0
+  match Iobuf.Peek.index iobuf '\x00' with
+  | Some pos -> pos
+  | None -> failwith "find_null_exn could not find \\x00"
+;;
+
+let%test_unit "find_null_exn handles a missing terminator" =
+  match find_null_exn (Iobuf.of_string "not terminated") with
+  | exception Failure "find_null_exn could not find \\x00" -> ()
+  | _ -> failwith "find_null_exn should reject a missing terminator"
 ;;
 
 let consume_cstring_exn iobuf =
