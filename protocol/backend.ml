@@ -280,7 +280,19 @@ module AuthenticationRequest = struct
     | GSS
     | SSPI
     | GSSContinue of { data : string }
+    | SASL of { mechanisms : string iarray }
+    | SASLContinue of { data : string }
+    | SASLFinal of { data : string }
   [@@deriving sexp]
+
+  let consume_sasl_mechanisms iobuf =
+    let rec loop acc =
+      match Shared.consume_cstring_exn iobuf with
+      | "" -> List.rev acc |> Iarray.of_list
+      | mechanism -> loop (mechanism :: acc)
+    in
+    loop []
+  ;;
 
   let consume_exn iobuf =
     match Iobuf.Consume.int32_be iobuf with
@@ -296,6 +308,13 @@ module AuthenticationRequest = struct
     | 8 ->
       let data = Iobuf.Consume.stringo iobuf in
       GSSContinue { data }
+    | 10 -> SASL { mechanisms = consume_sasl_mechanisms iobuf }
+    | 11 ->
+      let data = Iobuf.Consume.stringo iobuf in
+      SASLContinue { data }
+    | 12 ->
+      let data = Iobuf.Consume.stringo iobuf in
+      SASLFinal { data }
     | other -> raise_s [%message "AuthenticationRequest unrecognised type" (other : int)]
   ;;
 
@@ -310,11 +329,16 @@ module AuthenticationRequest = struct
   let validate_exn (_ : t) = ()
 
   let payload_length t =
+    let cstring_payload_length string = String.length string + 1 in
     let var_length =
       match t with
       | Ok | KerberosV5 | CleartextPassword | SCMCredential | GSS | SSPI -> 0
       | MD5Password { salt } -> String.length salt
-      | GSSContinue { data } -> String.length data
+      | GSSContinue { data } | SASLContinue { data } | SASLFinal { data } ->
+        String.length data
+      | SASL { mechanisms } ->
+        Iarray.sum (module Int) mechanisms ~f:cstring_payload_length
+        + cstring_payload_length ""
     in
     4 + var_length
   ;;
@@ -330,12 +354,19 @@ module AuthenticationRequest = struct
       | GSS -> 7
       | SSPI -> 9
       | GSSContinue { data = _ } -> 8
+      | SASL { mechanisms = _ } -> 10
+      | SASLContinue { data = _ } -> 11
+      | SASLFinal { data = _ } -> 12
     in
     Shared.fill_int32_be iobuf code;
     match t with
     | Ok | KerberosV5 | CleartextPassword | SCMCredential | GSS | SSPI -> ()
     | MD5Password { salt } -> Iobuf.Fill.stringo iobuf salt
-    | GSSContinue { data } -> Iobuf.Fill.stringo iobuf data
+    | GSSContinue { data } | SASLContinue { data } | SASLFinal { data } ->
+      Iobuf.Fill.stringo iobuf data
+    | SASL { mechanisms } ->
+      Iarray.iter mechanisms ~f:(Shared.fill_null_terminated iobuf);
+      Iobuf.Fill.char iobuf '\x00'
   ;;
 end
 

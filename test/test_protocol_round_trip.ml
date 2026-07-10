@@ -148,7 +148,8 @@ let%expect_test "KRB password message " =
     in
     match (msg : Protocol.Frontend.PasswordMessage.t) with
     | Gss_binary_blob blob -> print_s [%message (blob : string)]
-    | Cleartext_or_md5_hex _ -> raise_s [%message "Expected krb"]
+    | Cleartext_or_md5_hex _ | Sasl_initial_response _ | Sasl_response _ ->
+      raise_s [%message "Expected krb"]
   in
   let read = read_message ~read_message_type_char:true ~read_payload in
   let%bind () = roundtrip ~write ~read in
@@ -170,7 +171,8 @@ let%expect_test "Password password message " =
       Protocol.Frontend.PasswordMessage.consume_password iobuf |> Or_error.ok_exn
     in
     match (msg : Protocol.Frontend.PasswordMessage.t) with
-    | Gss_binary_blob _ -> raise_s [%message "Got krb"]
+    | Gss_binary_blob _ | Sasl_initial_response _ | Sasl_response _ ->
+      raise_s [%message "Got non-password message"]
     | Cleartext_or_md5_hex blob -> print_s [%message (blob : string)]
   in
   let read = read_message ~read_message_type_char:true ~read_payload in
@@ -180,6 +182,59 @@ let%expect_test "Password password message " =
     (message_char (p))
     (length 8)
     (blob hex)
+    |}];
+  Deferred.unit
+;;
+
+let%expect_test "SASL initial response password message" =
+  let write writer =
+    Protocol.Frontend.Writer.password_message
+      writer
+      (Sasl_initial_response
+         { mechanism = "SCRAM-SHA-256"; initial_response = "n,,n=,r=nonce" })
+  in
+  let read_payload ~payload_length:_ iobuf =
+    let msg =
+      Protocol.Frontend.PasswordMessage.consume_sasl_initial_response iobuf
+      |> Or_error.ok_exn
+    in
+    match (msg : Protocol.Frontend.PasswordMessage.t) with
+    | Sasl_initial_response { mechanism; initial_response } ->
+      print_s [%message (mechanism : string) (initial_response : string)]
+    | Cleartext_or_md5_hex _ | Gss_binary_blob _ | Sasl_response _ ->
+      raise_s [%message "Got non-SASL initial response message"]
+  in
+  let read = read_message ~read_message_type_char:true ~read_payload in
+  let%bind () = roundtrip ~write ~read in
+  [%expect
+    {|
+    (message_char (p))
+    (length 35)
+    ((mechanism SCRAM-SHA-256) (initial_response n,,n=,r=nonce))
+    |}];
+  Deferred.unit
+;;
+
+let%expect_test "SASL response password message" =
+  let write writer =
+    Protocol.Frontend.Writer.password_message writer (Sasl_response "proof")
+  in
+  let read_payload ~payload_length:_ iobuf =
+    let msg =
+      Protocol.Frontend.PasswordMessage.consume_sasl_response iobuf |> Or_error.ok_exn
+    in
+    match (msg : Protocol.Frontend.PasswordMessage.t) with
+    | Sasl_response response -> print_s [%message (response : string)]
+    | Cleartext_or_md5_hex _ | Gss_binary_blob _ | Sasl_initial_response _ ->
+      raise_s [%message "Got non-SASL response message"]
+  in
+  let read = read_message ~read_message_type_char:true ~read_payload in
+  let%bind () = roundtrip ~write ~read in
+  [%expect
+    {|
+    (message_char (p))
+    (length 9)
+    (response proof)
     |}];
   Deferred.unit
 ;;
@@ -210,6 +265,10 @@ let%expect_test "Authentication Request message " =
         ; GSS
         ; SSPI
         ; GSSContinue { data = "gsscont" }
+        ; SASL
+            { mechanisms = Iarray.of_array [| "SCRAM-SHA-256"; "SCRAM-SHA-256-PLUS" |] }
+        ; SASLContinue { data = "server-first" }
+        ; SASLFinal { data = "server-final" }
         ]
   in
   [%expect
@@ -238,6 +297,18 @@ let%expect_test "Authentication Request message " =
     (message_char (R))
     (length 15)
     ((sent (GSSContinue (data gsscont))) (msg (GSSContinue (data gsscont))))
+    (message_char (R))
+    (length 42)
+    ((sent (SASL (mechanisms (SCRAM-SHA-256 SCRAM-SHA-256-PLUS))))
+     (msg (SASL (mechanisms (SCRAM-SHA-256 SCRAM-SHA-256-PLUS)))))
+    (message_char (R))
+    (length 20)
+    ((sent (SASLContinue (data server-first)))
+     (msg (SASLContinue (data server-first))))
+    (message_char (R))
+    (length 20)
+    ((sent (SASLFinal (data server-final)))
+     (msg (SASLFinal (data server-final))))
     |}];
   Deferred.unit
 ;;

@@ -691,6 +691,14 @@ module Expert_with_command_complete = struct
 
   let login t ~startup_message ~password ~gss_krb_token =
     let user = Protocol.Frontend.StartupMessage.user startup_message in
+    let scram = ref None in
+    let no_password_error mechanism =
+      Stop
+        (Or_pgasync_error.error_string
+           ~error_code:Pgasync_error.Sqlstate.invalid_password
+           [%string
+             "Server requested %{mechanism} password auth, but no password was provided"])
+    in
     catch_write_errors t ~flush_message:Not_required ~f:(fun writer ->
       Protocol.Frontend.Writer.startup_message writer startup_message);
     read_messages t ~handle_message:(fun msg_type iobuf ->
@@ -710,12 +718,58 @@ module Expert_with_command_complete = struct
                   writer
                   (Cleartext_or_md5_hex md5_hex));
               Continue
-            | None ->
-              let s = "Server requested (md5) password, but no password was provided" in
-              Stop
-                (Or_pgasync_error.error_string
-                   ~error_code:Pgasync_error.Sqlstate.invalid_password
-                   s))
+            | None -> no_password_error "md5")
+         | Ok (SASL { mechanisms }) ->
+           if not (Iarray.mem mechanisms Scram_sha256.mechanism ~equal:String.equal)
+           then (
+             let s =
+               sprintf
+                 !"Server offered no supported SASL auth mechanisms: %{sexp:string \
+                   iarray}"
+                 mechanisms
+             in
+             Stop
+               (Or_pgasync_error.error_string
+                  ~error_code:Pgasync_error.Sqlstate.invalid_authorization_specification
+                  s))
+           else (
+             match password with
+             | None -> no_password_error Scram_sha256.mechanism
+             | Some password ->
+               (match !scram with
+                | Some _ -> protocol_error_s [%message "SASLInitial already done"]
+                | None ->
+                  let scram_state = Scram_sha256.create ~password () in
+                  scram := Some scram_state;
+                  catch_write_errors t ~flush_message:Not_required ~f:(fun writer ->
+                    Protocol.Frontend.Writer.password_message
+                      writer
+                      (Sasl_initial_response
+                         { mechanism = Scram_sha256.mechanism
+                         ; initial_response = Scram_sha256.initial_response scram_state
+                         }));
+                  Continue))
+         | Ok (SASLContinue { data }) ->
+           (match !scram with
+            | None -> protocol_error_s [%message "SASLContinue before SASL"]
+            | Some scram ->
+              (match Scram_sha256.final_response scram ~server_first_message:data with
+               | Error err -> protocol_error_of_error err
+               | Ok response ->
+                 catch_write_errors t ~flush_message:Not_required ~f:(fun writer ->
+                   Protocol.Frontend.Writer.password_message
+                     writer
+                     (Sasl_response response));
+                 Continue))
+         | Ok (SASLFinal { data }) ->
+           (match !scram with
+            | None -> protocol_error_s [%message "SASLFinal before SASL"]
+            | Some scram ->
+              (match
+                 Scram_sha256.verify_server_final scram ~server_final_message:data
+               with
+               | Ok () -> Continue
+               | Error err -> protocol_error_of_error err))
          | Ok GSS ->
            (match gss_krb_token with
             | Some token ->
@@ -726,7 +780,7 @@ module Expert_with_command_complete = struct
               let s = "Server requested GSS auth, but no gss_krb_token was provided" in
               Stop
                 (Or_pgasync_error.error_string
-                   ~error_code:Pgasync_error.Sqlstate.invalid_password
+                   ~error_code:Pgasync_error.Sqlstate.invalid_authorization_specification
                    s))
          | Ok other ->
            let s =

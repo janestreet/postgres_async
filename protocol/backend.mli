@@ -101,6 +101,9 @@ module AuthenticationRequest : sig
     | GSS
     | SSPI
     | GSSContinue of { data : string }
+    | SASL of { mechanisms : string iarray }
+    | SASLContinue of { data : string }
+    | SASLFinal of { data : string }
   [@@deriving sexp]
 
   val consume : ([> read ], seek, Iobuf.global) Iobuf.t -> t Or_error.t

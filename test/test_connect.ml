@@ -172,6 +172,29 @@ let%expect_test "password authentication" =
   return ()
 ;;
 
+let%expect_test "SCRAM-SHA-256 password authentication" =
+  let harness = force harness in
+  let%bind () =
+    Harness.with_connection_exn harness ~database:"postgres" (fun postgres ->
+      let q str =
+        let%bind r = Postgres_async.query_expect_no_data postgres str in
+        Or_error.ok_exn r;
+        return ()
+      in
+      let%bind () = q "CREATE ROLE role_scram_login" in
+      let%bind () = q "SET password_encryption = 'scram-sha-256'" in
+      let%bind () = q "CREATE ROLE auth_test_scram LOGIN PASSWORD 'test-password'" in
+      let%bind () = q "GRANT role_scram_login TO auth_test_scram" in
+      return ())
+  in
+  [%expect {| |}];
+  let%bind () = try_login harness ~user:"auth_test_scram" ~password:"test-password" in
+  [%expect {| OK; user:auth_test_scram database:postgres |}];
+  let%bind () = try_login harness ~user:"auth_test_scram" ~password:"bad" in
+  [%expect {| Login failed |}];
+  return ()
+;;
+
 let%expect_test "unix sockets & tcp" =
   let harness = force harness in
   let%bind result =

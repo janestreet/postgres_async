@@ -268,22 +268,38 @@ module PasswordMessage = struct
   type t =
     | Cleartext_or_md5_hex of string
     | Gss_binary_blob of string
+    | Sasl_initial_response of
+        { mechanism : string
+        ; initial_response : string
+        }
+    | Sasl_response of string
 
   let validate_exn = function
     | Cleartext_or_md5_hex password ->
       Shared.validate_null_terminated_exn ~field_name:"password" password
     | Gss_binary_blob _ -> ()
+    | Sasl_initial_response { mechanism; initial_response = _ } ->
+      Shared.validate_null_terminated_exn ~field_name:"mechanism" mechanism
+    | Sasl_response _ -> ()
   ;;
 
   let payload_length = function
     | Cleartext_or_md5_hex password -> String.length password + 1
     | Gss_binary_blob blob -> String.length blob
+    | Sasl_initial_response { mechanism; initial_response } ->
+      String.length mechanism + 1 + 4 + String.length initial_response
+    | Sasl_response response -> String.length response
   ;;
 
   let fill t iobuf =
     match t with
     | Cleartext_or_md5_hex password -> Shared.fill_null_terminated iobuf password
     | Gss_binary_blob blob -> Iobuf.Fill.stringo iobuf blob
+    | Sasl_initial_response { mechanism; initial_response } ->
+      Shared.fill_null_terminated iobuf mechanism;
+      Shared.fill_int32_be iobuf (String.length initial_response);
+      Iobuf.Fill.stringo iobuf initial_response
+    | Sasl_response response -> Iobuf.Fill.stringo iobuf response
   ;;
 
   let consume_krb_exn iobuf ~length =
@@ -303,6 +319,31 @@ module PasswordMessage = struct
     | exception exn ->
       error_s [%message "Failed to parse expected PasswordMessage" (exn : Exn.t)]
     | str -> Ok (Cleartext_or_md5_hex str)
+  ;;
+
+  let consume_sasl_initial_response iobuf =
+    match
+      let mechanism = Shared.consume_cstring_exn iobuf in
+      let initial_response_length = Iobuf.Consume.int32_be iobuf in
+      if initial_response_length < 0
+      then
+        raise_s
+          [%message
+            "SASLInitialResponse has negative initial response length"
+              (initial_response_length : int)];
+      let initial_response = Iobuf.Consume.stringo iobuf ~len:initial_response_length in
+      Sasl_initial_response { mechanism; initial_response }
+    with
+    | exception exn ->
+      error_s [%message "Failed to parse expected SASLInitialResponse" (exn : Exn.t)]
+    | t -> Ok t
+  ;;
+
+  let consume_sasl_response iobuf =
+    match Iobuf.Consume.stringo iobuf with
+    | exception exn ->
+      error_s [%message "Failed to parse expected SASLResponse" (exn : Exn.t)]
+    | response -> Ok (Sasl_response response)
   ;;
 end
 

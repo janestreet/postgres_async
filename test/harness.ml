@@ -27,6 +27,8 @@ let pg_hba =
   [ "# TYPE  DATABASE        USER                 ADDRESS      METHOD"
   ; "local   all             postgres                          trust"
   ; "host    all             postgres             127.0.0.1/32 trust"
+  ; "local   all             +role_scram_login                 scram-sha-256"
+  ; "host    all             +role_scram_login    127.0.0.1/32 scram-sha-256"
   ; "local   all             +role_password_login              md5"
   ; "host    all             +role_password_login 127.0.0.1/32 md5"
   ; ""
