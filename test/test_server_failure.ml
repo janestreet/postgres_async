@@ -225,6 +225,40 @@ let%expect_test "invaild messages during login" =
   return ()
 ;;
 
+let%expect_test "GSS auth request without token reports authorization error" =
+  let gss_auth_request = "R\x00\x00\x00\x08\x00\x00\x00\x07" in
+  let%bind () =
+    with_manual_server
+      ~handle_client:(fun reader writer ->
+        (* wait for the startup message. *)
+        let%bind _ = Reader.read_char reader in
+        Writer.write writer gss_auth_request;
+        Deferred.never ())
+      ~f:(fun where_to_connect ->
+        let%bind result =
+          Postgres_async.Expert.connect
+            ()
+            ~server:where_to_connect
+            ~user:"postgres"
+            ~database:"postgres"
+        in
+        (match result with
+         | Ok _ -> raise_s [%message "Connected unexpectedly"]
+         | Error error ->
+           let error_code = Postgres_async.Pgasync_error.postgres_error_code error in
+           print_s
+             [%message
+               (error_code : string option) (error : Postgres_async.Pgasync_error.t)]);
+        return ())
+  in
+  [%expect
+    {|
+    ((error_code (28000))
+     (error "Server requested GSS auth, but no gss_krb_token was provided"))
+    |}];
+  return ()
+;;
+
 let%expect_test "invalid messages during query_expect_no_data" =
   let try_query
     ?(show_second_result = false)

@@ -19,7 +19,11 @@ depends: [
   "core"
   "core_kernel"
   "ppx_jane"
+  "base64"       {>= "3.4.0"}
+  "cryptokit"    {>= "1.16" & < "1.17"}
+  "cstruct"      {>= "6.0.0"}
   "dune"         {>= "3.17.0"}
+  "pbkdf"
 ]
 available: arch != "x86_32"
 synopsis: "OCaml/async implementation of the postgres protocol (i.e., does not use C-bindings to libpq)"

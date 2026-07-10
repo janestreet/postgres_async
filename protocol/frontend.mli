@@ -80,9 +80,20 @@ module PasswordMessage : sig
   type t =
     | Cleartext_or_md5_hex of string
     | Gss_binary_blob of string
+    | Sasl_initial_response of
+        { mechanism : string
+        ; initial_response : string
+        }
+    | Sasl_response of string
 
   val consume_krb : ([> read ], seek, Iobuf.global) Iobuf.t -> length:int -> t Or_error.t
   val consume_password : ([> read ], seek, Iobuf.global) Iobuf.t -> t Or_error.t
+
+  val consume_sasl_initial_response
+    :  ([> read ], seek, Iobuf.global) Iobuf.t
+    -> t Or_error.t
+
+  val consume_sasl_response : ([> read ], seek, Iobuf.global) Iobuf.t -> t Or_error.t
 end
 
 module Parse : sig
