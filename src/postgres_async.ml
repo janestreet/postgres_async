@@ -273,10 +273,27 @@ module Expert_with_command_complete = struct
              (match%map Monitor.try_with_join_or_error (fun () -> pq_cancel t) with
               | Ok () -> ()
               | Error (_ : Error.t) -> ()));
+        (* Send [Terminate] straight away, without waiting for any in-flight query to
+           release the sequencer. The protocol allows [Terminate] at any point, and the
+           backend acts on it as soon as it reads it: if a statement is executing, that is
+           after the statement's response has been sent. Operations that have not started
+           yet check [t.state] before writing and we have already transitioned to
+           [Closing], so they will not write after it.
+
+           The exception is an in-flight [copy_in]: the backend reads our stream
+           mid-operation, so it sees the [Terminate] immediately and the copy is aborted
+           rather than being given the grace period, and the copy's loop may emit a few
+           more (harmlessly discarded) messages after the [Terminate]. We consider that
+           acceptable: [close] during an active copy means abandoning it, the abort rolls
+           the transaction back, and the caller always sees the copy fail. *)
+        catch_write_errors t ~flush_message:Not_required ~f:(fun writer ->
+          Protocol.Frontend.Writer.terminate writer);
+        let reader_is_ours = Ivar.create () in
         let closed_gracefully_deferred =
+          (* The EOF read must still wait for the sequencer: while a query is in flight,
+             its message loop owns the reader. *)
           Query_sequencer.enqueue t.sequencer (fun () ->
-            catch_write_errors t ~flush_message:Not_required ~f:(fun writer ->
-              Protocol.Frontend.Writer.terminate writer);
+            Ivar.fill_exn reader_is_ours ();
             (* we'll get an exception if the reader is already closed. *)
             match%bind
               Monitor.try_with ~run:`Now ~rest:`Log (fun () -> Reader.read_char t.reader)
@@ -292,27 +309,46 @@ module Expert_with_command_complete = struct
                    also_available)
             | Error exn -> return (Or_pgasync_error.of_exn exn))
         in
+        let finish_close_successfully () =
+          let%bind () = cleanup_resources t in
+          match t.state with
+          | Open | Closed_gracefully -> assert false
+          | Failed _ ->
+            (* e.g., if the Writer had an asynchronous exn while the reader was being
+               closed, we might have called [failed t] and filled this ivar already. *)
+            return ()
+          | Closing ->
+            set_state t Closed_gracefully;
+            return ()
+        in
+        (* Give the graceful close (in-flight query finishing, then the server hanging up
+           in response to [Terminate]) a bounded grace period, after which we tear the
+           socket down regardless. The two ways of running out of time are distinguishable
+           via [reader_is_ours]. *)
         (match%bind Clock.with_timeout (sec 1.) closed_gracefully_deferred with
-         | `Timeout ->
-           failed
-             t
-             (Pgasync_error.of_string
-                ~error_code:Pgasync_error.Sqlstate.connection_exception
-                "close: EOF expected, but instead stuck");
-           return ()
+         | `Result (Ok ()) -> finish_close_successfully ()
          | `Result (Error err) ->
            failed t err;
            return ()
-         | `Result (Ok ()) ->
-           let%bind () = cleanup_resources t in
-           (match t.state with
-            | Open | Closed_gracefully -> assert false
-            | Failed _ ->
-              (* e.g., if the Writer had an asynchronous exn while the reader was being
-                 closed, we might have called [failed t] and filled this ivar already. *)
-              return ()
-            | Closing ->
-              set_state t Closed_gracefully;
+         | `Timeout ->
+           (match Ivar.is_full reader_is_ours with
+            | true ->
+              (* The connection was idle and all traffic on it had completed; the server
+                 merely failed to hang up promptly after [Terminate]. While we do tear the
+                 socket down abruptly, this is a successful (if impolite) close rather
+                 than a connection failure. *)
+              finish_close_successfully ()
+            | false ->
+              (* A query was still in flight (e.g. wedged on a dead network connection, or
+                 a cancel request issued above hasn't taken effect). Tearing the
+                 connection down interrupts it, and we report that: this close was not
+                 graceful. *)
+              failed
+                t
+                (Pgasync_error.of_string
+                   ~error_code:Pgasync_error.Sqlstate.connection_exception
+                   "close: an in-flight query did not finish within the close grace \
+                    period, so the connection was torn down forcibly");
               return ()))
     ;;
 
@@ -442,21 +478,28 @@ module Expert_with_command_complete = struct
          | true -> Ok ())
     ;;
 
-    let handle_chunk t ~handle_message =
-      let stop_error sexp =
-        return
-          (`Stop
-            (`Protocol_error
-              (Pgasync_error.create_s
-                 ~error_code:Pgasync_error.Sqlstate.protocol_violation
-                 sexp)))
-      in
+    let protocol_error sexp =
+      Pgasync_error.create_s ~error_code:Pgasync_error.Sqlstate.protocol_violation sexp
+    ;;
+
+    type 'a chunk_handler =
+      | Synchronous_handler of
+          (Protocol.Backend.constructor
+           -> (read, Iobuf.seek, Iobuf.global) Iobuf.t
+           -> 'a handle_message_result)
+      | Deferred_handler of
+          (Protocol.Backend.constructor
+           -> (read, Iobuf.seek, Iobuf.global) Iobuf.t
+           -> 'a handle_message_result Deferred.t)
+
+    let handle_chunk ~max_message_length ~handle_message =
+      let stop_error sexp = return (`Stop (`Protocol_error (protocol_error sexp))) in
       let rec loop iobuf =
         let chunk_hi_bound = Iobuf.Hi_bound.window iobuf in
         match Protocol.Backend.focus_on_message iobuf with
         | Error Iobuf_too_short_for_header -> return `Continue
         | Error (Iobuf_too_short_for_message { message_length }) ->
-          (match message_length > t.max_message_length with
+          (match message_length > max_message_length with
            | true -> stop_error [%message "Message too long" (message_length : int)]
            | false -> return `Continue)
         | Error (Nonsense_message_length v) ->
@@ -465,27 +508,99 @@ module Expert_with_command_complete = struct
           stop_error [%message "Unrecognised message type character" (other : char)]
         | Ok message_type ->
           let message_hi_bound = Iobuf.Hi_bound.window iobuf in
-          let%bind.Eager_deferred res =
-            let iobuf = Iobuf.read_only iobuf in
-            handle_message message_type iobuf
-          in
-          let res =
-            match res with
-            | Protocol_error _ as res -> res
-            | (Stop _ | Continue) as res ->
-              (match
-                 check_window_after_handle_message message_type iobuf ~message_hi_bound
-               with
-               | Error err -> Protocol_error err
-               | Ok () -> res)
-          in
-          Iobuf.bounded_flip_hi iobuf chunk_hi_bound;
-          (match res with
-           | Protocol_error err -> return (`Stop (`Protocol_error err))
-           | Continue -> loop iobuf
-           | Stop s -> return (`Stop (`Done s)))
+          let message_iobuf = Iobuf.read_only iobuf in
+          (match handle_message with
+           | Synchronous_handler handle_message ->
+             finish_message
+               iobuf
+               ~message_iobuf
+               ~chunk_hi_bound
+               ~message_hi_bound
+               ~message_type
+               (handle_message message_type message_iobuf)
+           | Deferred_handler handle_message ->
+             let%bind.Eager_deferred result = handle_message message_type message_iobuf in
+             finish_message
+               iobuf
+               ~message_iobuf
+               ~chunk_hi_bound
+               ~message_hi_bound
+               ~message_type
+               result)
+      and finish_message
+        iobuf
+        ~message_iobuf
+        ~chunk_hi_bound
+        ~message_hi_bound
+        ~message_type
+        result
+        =
+        let result =
+          match result with
+          | Protocol_error _ as result -> result
+          | (Stop _ | Continue) as result ->
+            (match
+               check_window_after_handle_message
+                 message_type
+                 message_iobuf
+                 ~message_hi_bound
+             with
+             | Error error -> Protocol_error error
+             | Ok () -> result)
+        in
+        Iobuf.bounded_flip_hi iobuf chunk_hi_bound;
+        match result with
+        | Protocol_error error -> return (`Stop (`Protocol_error error))
+        | Continue -> loop iobuf
+        | Stop result -> return (`Stop (`Done result))
       in
       Staged.stage loop
+    ;;
+
+    let%test_unit "synchronous message dispatch does not allocate per message" =
+      let message = "1\x00\x00\x00\x04" in
+      let measure message_count =
+        let iobuf =
+          Iobuf.of_string
+            (String.concat (List.init message_count ~f:(fun (_ : int) -> message)))
+        in
+        let messages_handled = ref 0 in
+        let handle_message (_ : Protocol.Backend.constructor) iobuf =
+          assert (Iobuf.is_empty iobuf);
+          incr messages_handled;
+          if !messages_handled = message_count then Stop () else Continue
+        in
+        let handle_chunk =
+          Staged.unstage
+            (handle_chunk
+               ~max_message_length:Int.max_value
+               ~handle_message:(Synchronous_handler handle_message))
+        in
+        let #(result, allocation) =
+          Gc.For_testing.measure_allocation (fun () ->
+            Deferred.value_exn (handle_chunk iobuf))
+        in
+        assert (!messages_handled = message_count);
+        (match result with
+         | `Stop (`Done ()) -> ()
+         | `Continue | `Stop (`Protocol_error _) -> assert false);
+        allocation
+      in
+      let one_message = measure 1 in
+      let many_messages = measure 1_000 in
+      let allocated_words
+        ({ major_words_allocated; minor_words_allocated } :
+          Gc.For_testing.Allocation_report.t)
+        =
+        major_words_allocated + minor_words_allocated
+      in
+      match Int.equal (allocated_words one_message) (allocated_words many_messages) with
+      | true -> ()
+      | false ->
+        raise_s
+          [%message
+            (one_message : Gc.For_testing.Allocation_report.t)
+              (many_messages : Gc.For_testing.Allocation_report.t)]
     ;;
 
     type 'a read_messages_result =
@@ -501,8 +616,7 @@ module Expert_with_command_complete = struct
                no messages available"))
     ;;
 
-    let run_reader t ~handle_message =
-      let handle_chunk = Staged.unstage (handle_chunk t ~handle_message) in
+    let run_reader_with_handle_chunk t ~handle_chunk =
       let bytes_available =
         if Reader.is_closed t.reader then false else Reader.bytes_available t.reader > 0
       in
@@ -546,6 +660,26 @@ module Expert_with_command_complete = struct
                    (Pgasync_error.of_string
                       ~error_code:Pgasync_error.Sqlstate.connection_does_not_exist
                       "Unexpected EOF (no unconsumed messages)"))))
+    ;;
+
+    let run_reader t ~handle_message =
+      run_reader_with_handle_chunk
+        t
+        ~handle_chunk:
+          (Staged.unstage
+             (handle_chunk
+                ~max_message_length:t.max_message_length
+                ~handle_message:(Deferred_handler handle_message)))
+    ;;
+
+    let run_reader_synchronously t ~handle_message =
+      run_reader_with_handle_chunk
+        t
+        ~handle_chunk:
+          (Staged.unstage
+             (handle_chunk
+                ~max_message_length:t.max_message_length
+                ~handle_message:(Synchronous_handler handle_message)))
     ;;
 
     let handle_notice_response iobuf =
@@ -598,71 +732,88 @@ module Expert_with_command_complete = struct
         Ok ()
     ;;
 
-    let read_messages' t ~handle_message =
-      let[@inline] continue_if_ok = function
-        | Error err -> return (Protocol_error err)
-        | Ok () -> return Continue
+    type asynchronous_message_result =
+      | Not_asynchronous
+      | Handled_asynchronous
+      | Asynchronous_protocol_error of Pgasync_error.t
+
+    let handle_asynchronous_message t message_type iobuf =
+      let handle = function
+        | Ok () -> Handled_asynchronous
+        | Error error -> Asynchronous_protocol_error error
       in
+      match (message_type : Protocol.Backend.constructor) with
+      | NoticeResponse -> handle (handle_notice_response iobuf)
+      | ParameterStatus -> handle (handle_parameter_status t iobuf)
+      | NotificationResponse -> handle (handle_notification_response t iobuf)
+      | _ -> Not_asynchronous
+    ;;
+
+    let read_messages_synchronously t ~handle_message =
+      run_reader_synchronously t ~handle_message:(fun message_type iobuf ->
+        match handle_asynchronous_message t message_type iobuf with
+        | Not_asynchronous -> handle_message message_type iobuf
+        | Handled_asynchronous -> Continue
+        | Asynchronous_protocol_error error -> Protocol_error error)
+    ;;
+
+    let read_messages' t ~handle_message =
       run_reader t ~handle_message:(fun message_type iobuf ->
-        match (message_type : Protocol.Backend.constructor) with
-        | NoticeResponse -> continue_if_ok (handle_notice_response iobuf)
-        | ParameterStatus -> continue_if_ok (handle_parameter_status t iobuf)
-        | NotificationResponse -> continue_if_ok (handle_notification_response t iobuf)
-        | _ -> handle_message message_type iobuf)
+        match handle_asynchronous_message t message_type iobuf with
+        | Not_asynchronous -> handle_message message_type iobuf
+        | Handled_asynchronous -> return Continue
+        | Asynchronous_protocol_error error -> return (Protocol_error error))
     ;;
 
     let read_messages ?pushback t ~handle_message =
-      read_messages' t ~handle_message:(fun message_type iobuf ->
-        let result = handle_message message_type iobuf in
-        match pushback with
-        | None -> return result
-        | Some pushback ->
+      match pushback with
+      | None -> read_messages_synchronously t ~handle_message
+      | Some pushback ->
+        read_messages' t ~handle_message:(fun message_type iobuf ->
+          let result = handle_message message_type iobuf in
           let%map () = pushback () in
           result)
     ;;
 
     let consume_one_asynchronous_message t =
-      let stop_if_ok = function
-        | Error err -> return (Protocol_error err)
-        | Ok () -> return (Stop ())
-      in
       let handle_message message_type iobuf =
-        match (message_type : Protocol.Backend.constructor) with
-        | NoticeResponse -> stop_if_ok (handle_notice_response iobuf)
-        | ParameterStatus -> stop_if_ok (handle_parameter_status t iobuf)
-        | NotificationResponse -> stop_if_ok (handle_notification_response t iobuf)
-        | ErrorResponse ->
-          (* ErrorResponse is a weird one, because it's very much a message that's part of
-             the request-response part of the protocol, but secretly you will actually get
-             one if e.g. your backend is terminated by [pg_terminate_backend]. The fact
-             that this asynchronous error-response possibility isn't mentioned in the
-             "protocol-flow" docs kinda doesn't matter as the connection is being
-             destroyed.
+        match handle_asynchronous_message t message_type iobuf with
+        | Handled_asynchronous -> return (Stop ())
+        | Asynchronous_protocol_error error -> return (Protocol_error error)
+        | Not_asynchronous ->
+          (match (message_type : Protocol.Backend.constructor) with
+           | ErrorResponse ->
+             (* ErrorResponse is a weird one, because it's very much a message that's part
+                of the request-response part of the protocol, but secretly you will
+                actually get one if e.g. your backend is terminated by
+                [pg_terminate_backend]. The fact that this asynchronous error-response
+                possibility isn't mentioned in the "protocol-flow" docs kinda doesn't
+                matter as the connection is being destroyed.
 
-             Ultimately handling it specially here only changes the contents of the
-             [Protocol_error _] we return (i.e., behaviour is unch vs. the catch-all
-             case). Think of it as giving people better error messages, not a semantic
-             thing. *)
-          let tag =
-            "ErrorResponse received asynchronously, assuming connection is dead"
-          in
-          let error =
-            match Protocol.Backend.ErrorResponse.consume iobuf with
-            | Error err ->
-              Pgasync_error.of_error
-                err
-                ~error_code:Pgasync_error.Sqlstate.protocol_violation
-            | Ok err -> Pgasync_error.of_error_response err |> Pgasync_error.tag ~tag
-          in
-          return (Protocol_error error)
-        | other ->
-          return
-            (Protocol_error
-               (Pgasync_error.create_s
-                  ~error_code:Pgasync_error.Sqlstate.protocol_violation
-                  [%message
-                    "Unsolicited message from server outside of query conversation"
-                      (other : Protocol.Backend.constructor)]))
+                Ultimately handling it specially here only changes the contents of the
+                [Protocol_error _] we return (i.e., behaviour is unchanged vs. the
+                catch-all case). Think of it as giving people better error messages, not a
+                semantic thing. *)
+             let tag =
+               "ErrorResponse received asynchronously, assuming connection is dead"
+             in
+             let error =
+               match Protocol.Backend.ErrorResponse.consume iobuf with
+               | Error err ->
+                 Pgasync_error.of_error
+                   err
+                   ~error_code:Pgasync_error.Sqlstate.protocol_violation
+               | Ok err -> Pgasync_error.of_error_response err |> Pgasync_error.tag ~tag
+             in
+             return (Protocol_error error)
+           | other ->
+             return
+               (Protocol_error
+                  (Pgasync_error.create_s
+                     ~error_code:Pgasync_error.Sqlstate.protocol_violation
+                     [%message
+                       "Unsolicited message from server outside of query conversation"
+                         (other : Protocol.Backend.constructor)])))
       in
       run_reader t ~handle_message
     ;;
@@ -1186,9 +1337,13 @@ module Expert_with_command_complete = struct
      we need to use to handle the responses significantly.
 
      We don't currently take advantage of named statements or portals, we just use the
-     'unnamed' ones. We don't take advantage of the ability to bind a statement twice or
-     partially execute a portal; we just send the full parse-bind-describe-execute
-     sequence unconditionally in one go.
+     'unnamed' ones. Without a result-format selector we send the full
+     Parse/Bind/Describe-portal/Execute/Sync sequence in one go.
+
+     A result-format selector needs the result-column OIDs before Bind. That path first
+     sends Parse/Describe-statement/Flush and reads the description, then sends
+     Bind-with-result-formats/Describe-portal/Execute/Sync. The Flush preserves the unnamed
+     statement across the extra round trip.
 
      Ultimately, one needs to read the "message flow/extended query" section of the
      documentation:
@@ -1198,25 +1353,24 @@ module Expert_with_command_complete = struct
      What follows is a brief summary, and then a description of how the different
      functions fit in.
 
-     When any error occurs, the server will report the error and tehen discard messages
-     until a 'sync' message. This means that we can safely send
-     parse-bind-describe-execute in one go and then read all the responses, because if one
-     step fails the remainder will be ignored. So, we do this because it improves latency.
+     When any error occurs, the server will report the error and then discard messages
+     until a Sync message. This lets the default path batch its messages safely: if one
+     step fails, the server ignores the remainder. If the first phase of the result-format
+     path fails, or the selector raises, we send Sync explicitly and consume through
+     ReadyForQuery before returning.
 
-     [parse_and_start_executing_query] instructs the server to parse the query, bind the
-     parameters, describe the type of the rows that will be produced. It then reads
-     response messages, walking through a state machine. The first three states are easy,
-     because we expect either the relevant response messages (ParseComplete, BindComplete,
-     RowDescription|NoData), or an ErrorResponse.
+     [read_until_query_execution_starts] reads response messages through a state machine.
+     The default path enters it in [Parsing], while the result-format path has already
+     parsed the statement and enters it in [Binding]. The parsing, binding, and describing
+     states expect either their relevant completion messages or an ErrorResponse.
 
      After that, things are trickier. We don't know what string was in the query and
      whether or not the query emits no data (e.g., a DELETE), or if server is going to
      send us rows, or if it's going to try and COPY IN/OUT, etc.
 
-     [parse_and_start_executing_query] detects which case we're in and returns a value of
-     type [setup_loop_result] indicating this. It's a little weird because we don't want
-     to consume any of the actual data (if applicable) in that function, just detect the
-     mode.
+     The state machine detects which case we're in and returns a value of type
+     [setup_loop_result]. It's a little weird because we don't want to consume any of the
+     actual data (if applicable) there, just detect the mode.
 
      If the response to the [Describe] message was a [RowDescription], we know that the
      response to the [Execute] will be some [DataRow]s, so we don't look at any messages
@@ -1246,7 +1400,7 @@ module Expert_with_command_complete = struct
 
      Note that it's also possible for the [About_to_deliver_rows] case to complete without
      output. The difference is that one corresponds to receiving [RowDescription],
-     [CommandComplete] and the other [NoData], [CommandComplete]. *)
+            [CommandComplete] and the other [NoData], [CommandComplete]. *)
   type setup_loop_state =
     | Parsing
     | Binding
@@ -1293,7 +1447,64 @@ module Expert_with_command_complete = struct
             Command_complete.create ~tag:tag_and_maybe_oid ~rows))
   ;;
 
-  let parse_and_start_executing_query t query_string ~parameters =
+  let read_until_query_execution_starts t ~initial_state =
+    let state = ref initial_state in
+    let unexpected_msg_type ~here msg_type =
+      unexpected_msg_type ~here msg_type [%sexp (state : setup_loop_state ref)]
+    in
+    read_messages t ~handle_message:(fun msg_type iobuf ->
+      match !state, msg_type with
+      | state, ErrorResponse ->
+        (match Protocol.Backend.ErrorResponse.consume iobuf with
+         | Error err -> protocol_error_of_error err
+         | Ok err ->
+           let tag =
+             sprintf !"Postgres Server Error (state=%{sexp:setup_loop_state})" state
+           in
+           let err = Pgasync_error.of_error_response err |> Pgasync_error.tag ~tag in
+           Stop (Remote_reported_error err))
+      | Parsing, ParseComplete ->
+        let () = Protocol.Backend.ParseComplete.consume iobuf in
+        state := Binding;
+        Continue
+      | Parsing, msg_type -> unexpected_msg_type ~here:[%here] msg_type
+      | Binding, BindComplete ->
+        let () = Protocol.Backend.BindComplete.consume iobuf in
+        state := Describing;
+        Continue
+      | Binding, msg_type -> unexpected_msg_type ~here:[%here] msg_type
+      | Describing, RowDescription ->
+        (match Protocol.Backend.RowDescription.consume iobuf with
+         | Error err -> protocol_error_of_error err
+         | Ok description -> Stop (About_to_deliver_rows description))
+      | Describing, NoData ->
+        let () = Protocol.Backend.NoData.consume iobuf in
+        state := Executing;
+        Continue
+      | Describing, msg_type -> unexpected_msg_type ~here:[%here] msg_type
+      | Executing, EmptyQueryResponse ->
+        let () = Protocol.Backend.EmptyQueryResponse.consume iobuf in
+        Stop Empty_query
+      | Executing, CommandComplete ->
+        (match Protocol.Backend.CommandComplete.consume iobuf with
+         | Error err -> protocol_error_of_error err
+         | Ok str -> Stop (Command_complete_without_output (parse_command_complete str)))
+      | Executing, CopyInResponse ->
+        (match Protocol.Backend.CopyInResponse.consume iobuf with
+         | Error err -> protocol_error_of_error err
+         | Ok details -> Stop (Ready_to_copy_in details))
+      | Executing, CopyOutResponse ->
+        (match Protocol.Backend.CopyOutResponse.consume iobuf with
+         | Error err -> protocol_error_of_error err
+         | Ok _ -> Stop About_to_copy_out)
+      | Executing, CopyBothResponse ->
+        (* CopyBothResponse is only used for streaming replication, which we do not
+           initiate. *)
+        unexpected_msg_type ~here:[%here] msg_type
+      | Executing, msg_type -> unexpected_msg_type ~here:[%here] msg_type)
+  ;;
+
+  let with_open_connection t ~f =
     match t.state with
     | Failed { error; _ } ->
       (* See comment at top of file regarding erasing error codes from this error. *)
@@ -1310,7 +1521,13 @@ module Expert_with_command_complete = struct
            (Pgasync_error.of_string
               ~error_code:Pgasync_error.Sqlstate.connection_does_not_exist
               "query issued against connection closed by user"))
-    | Open ->
+    | Open -> f ()
+  ;;
+
+  (* Send Parse+Bind+Describe+Execute+Sync in one go. Used for text format queries, where
+     we don't care about the OIDs of the result columns *)
+  let parse_and_start_executing_query t query_string ~parameters =
+    with_open_connection t ~f:(fun () ->
       catch_write_errors t ~flush_message:Not_required ~f:(fun writer ->
         (* This is modeled after PQsendQueryGuts from libpq/fe-exec.c *)
         Protocol.Frontend.Writer.parse
@@ -1345,9 +1562,31 @@ module Expert_with_command_complete = struct
            Since we never actually do batching - API does not provide for this - we now
            Sync instead, like libpq does *)
         Protocol.Frontend.Writer.sync writer);
-      let state = ref Parsing in
+      read_until_query_execution_starts t ~initial_state:Parsing)
+  ;;
+
+  type describe_statement_state =
+    | Parsing_statement
+    | Describing_parameters
+    | Describing_statement
+  [@@deriving sexp_of]
+
+  (* Send Parse+Describe, but not bind or execute. Used for cases where we might need to
+     know about the result type OIDs, eg to request them using the binary format. *)
+  let parse_and_describe_statement t query_string =
+    with_open_connection t ~f:(fun () ->
+      catch_write_errors t ~flush_message:Not_required ~f:(fun writer ->
+        Protocol.Frontend.Writer.parse
+          writer
+          { destination = Types.Statement_name.unnamed; query = query_string };
+        Protocol.Frontend.Writer.describe writer (Statement Types.Statement_name.unnamed);
+        (* [Sync] can release a transaction-pooled backend and lose the unnamed statement
+           before we bind it. [Flush] gets the description without ending the extended
+           query cycle. *)
+        Protocol.Frontend.Writer.flush writer);
+      let state = ref Parsing_statement in
       let unexpected_msg_type ~here msg_type =
-        unexpected_msg_type ~here msg_type [%sexp (state : setup_loop_state ref)]
+        unexpected_msg_type ~here msg_type [%sexp (state : describe_statement_state ref)]
       in
       read_messages t ~handle_message:(fun msg_type iobuf ->
         match !state, msg_type with
@@ -1356,49 +1595,50 @@ module Expert_with_command_complete = struct
            | Error err -> protocol_error_of_error err
            | Ok err ->
              let tag =
-               sprintf !"Postgres Server Error (state=%{sexp:setup_loop_state})" state
+               sprintf
+                 !"Postgres Server Error (state=%{sexp:describe_statement_state})"
+                 state
              in
-             let err = Pgasync_error.of_error_response err |> Pgasync_error.tag ~tag in
-             Stop (Remote_reported_error err))
-        | Parsing, ParseComplete ->
+             Stop (Error (Pgasync_error.of_error_response err |> Pgasync_error.tag ~tag)))
+        | Parsing_statement, ParseComplete ->
           let () = Protocol.Backend.ParseComplete.consume iobuf in
-          state := Binding;
+          state := Describing_parameters;
           Continue
-        | Parsing, msg_type -> unexpected_msg_type ~here:[%here] msg_type
-        | Binding, BindComplete ->
-          let () = Protocol.Backend.BindComplete.consume iobuf in
-          state := Describing;
-          Continue
-        | Binding, msg_type -> unexpected_msg_type ~here:[%here] msg_type
-        | Describing, RowDescription ->
+        | Parsing_statement, msg_type -> unexpected_msg_type ~here:[%here] msg_type
+        | Describing_parameters, ParameterDescription ->
+          (match Protocol.Backend.ParameterDescription.consume iobuf with
+           | Error err -> protocol_error_of_error err
+           | Ok (_ : int array) ->
+             state := Describing_statement;
+             Continue)
+        | Describing_parameters, msg_type -> unexpected_msg_type ~here:[%here] msg_type
+        | Describing_statement, RowDescription ->
           (match Protocol.Backend.RowDescription.consume iobuf with
            | Error err -> protocol_error_of_error err
-           | Ok description -> Stop (About_to_deliver_rows description))
-        | Describing, NoData ->
+           | Ok description -> Stop (Ok description))
+        | Describing_statement, NoData ->
           let () = Protocol.Backend.NoData.consume iobuf in
-          state := Executing;
-          Continue
-        | Describing, msg_type -> unexpected_msg_type ~here:[%here] msg_type
-        | Executing, EmptyQueryResponse ->
-          let () = Protocol.Backend.EmptyQueryResponse.consume iobuf in
-          Stop Empty_query
-        | Executing, CommandComplete ->
-          (match Protocol.Backend.CommandComplete.consume iobuf with
-           | Error err -> protocol_error_of_error err
-           | Ok str -> Stop (Command_complete_without_output (parse_command_complete str)))
-        | Executing, CopyInResponse ->
-          (match Protocol.Backend.CopyInResponse.consume iobuf with
-           | Error err -> protocol_error_of_error err
-           | Ok details -> Stop (Ready_to_copy_in details))
-        | Executing, CopyOutResponse ->
-          (match Protocol.Backend.CopyOutResponse.consume iobuf with
-           | Error err -> protocol_error_of_error err
-           | Ok _ -> Stop About_to_copy_out)
-        | Executing, CopyBothResponse ->
-          (* CopyBothResponse is only used for streaming replication, which we do not
-             initiate. *)
-          unexpected_msg_type ~here:[%here] msg_type
-        | Executing, msg_type -> unexpected_msg_type ~here:[%here] msg_type)
+          Stop (Ok (Iarray.of_list []))
+        | Describing_statement, msg_type -> unexpected_msg_type ~here:[%here] msg_type))
+  ;;
+
+  (* Send Bind+Execute for a portal previously created via [parse_and_describe_statement] *)
+  let bind_and_start_executing_query t ~parameters ~result_formats =
+    with_open_connection t ~f:(fun () ->
+      catch_write_errors t ~flush_message:Not_required ~f:(fun writer ->
+        Protocol.Frontend.Writer.bind_with_result_formats
+          writer
+          { destination = Types.Portal_name.unnamed
+          ; statement = Types.Statement_name.unnamed
+          ; parameters
+          ; result_formats
+          };
+        Protocol.Frontend.Writer.describe writer (Portal Types.Portal_name.unnamed);
+        Protocol.Frontend.Writer.execute
+          writer
+          { portal = Types.Portal_name.unnamed; limit = Unlimited };
+        Protocol.Frontend.Writer.sync writer);
+      read_until_query_execution_starts t ~initial_state:Binding)
   ;;
 
   (* really the return type of [f] should be [Protocol_error _ | Continue], but it's
@@ -1485,24 +1725,38 @@ module Expert_with_command_complete = struct
   ;;
 
   let consume_ready_for_query t =
-    read_messages t ~handle_message:(fun msg_type iobuf ->
-      match msg_type with
-      | ReadyForQuery ->
-        (match Protocol.Backend.ReadyForQuery.consume iobuf with
-         | Error err -> protocol_error_of_error err
-         | Ok (Idle | In_transaction | In_failed_transaction) -> Stop (Ok ()))
-      | ErrorResponse ->
-        (match Protocol.Backend.ErrorResponse.consume iobuf with
-         | Error err -> protocol_error_of_error err
-         | Ok err ->
-           let err =
-             Pgasync_error.of_error_response err
-             |> Pgasync_error.tag
-                  ~tag:"Error waiting for ReadyForQuery (after query execution finished)"
-           in
-           Stop (Error err))
-      | msg_type ->
-        unexpected_msg_type ~here:[%here] msg_type [%sexp "waiting for ReadyForQuery"])
+    let error = ref None in
+    let%map result =
+      read_messages t ~handle_message:(fun msg_type iobuf ->
+        match msg_type with
+        | ReadyForQuery ->
+          (match Protocol.Backend.ReadyForQuery.consume iobuf with
+           | Error err -> protocol_error_of_error err
+           | Ok (Idle | In_transaction | In_failed_transaction) ->
+             Stop
+               (match !error with
+                | None -> Ok ()
+                | Some error -> Error error))
+        | ErrorResponse ->
+          (match Protocol.Backend.ErrorResponse.consume iobuf with
+           | Error err -> protocol_error_of_error err
+           | Ok err ->
+             let err =
+               Pgasync_error.of_error_response err
+               |> Pgasync_error.tag
+                    ~tag:
+                      "Error waiting for ReadyForQuery (after query execution finished)"
+             in
+             (match !error with
+              | None -> error := Some err
+              | Some (_ : Pgasync_error.t) -> ());
+             Continue)
+        | msg_type ->
+          unexpected_msg_type ~here:[%here] msg_type [%sexp "waiting for ReadyForQuery"])
+    in
+    match result, !error with
+    | Connection_closed _, Some error -> Done (Error error)
+    | (Connection_closed _ | Done _), _ -> result
   ;;
 
   let handle_ready_for_query t query_result =
@@ -1521,52 +1775,97 @@ module Expert_with_command_complete = struct
        | Done (Ok ()) -> return (Ok result))
   ;;
 
+  let sync_and_recover_after_describe_statement_error t error =
+    catch_write_errors t ~flush_message:Not_required ~f:(fun writer ->
+      Protocol.Frontend.Writer.sync writer);
+    let%map result = handle_ready_for_query t (Done (Error error)) in
+    match result with
+    | Error error -> error
+    | Ok () -> assert false
+  ;;
+
   let internal_query_gen
     t
     ?(parameters = [||])
+    ?result_format_for_oid
     ?pushback
     ~handle_columns
     query_string
     ~prepare
     ~handle_row
     =
-    let%bind result =
-      match%bind parse_and_start_executing_query t query_string ~parameters with
-      | Connection_closed _ as err -> return err
-      | Done About_to_copy_out ->
-        let%bind (Connection_closed _ | Done ()) = drain_copy_out t in
-        return
-          (Done
-             (Or_pgasync_error.error_s
-                [%message "COPY TO STDOUT is not appropriate for [Postgres_async.query]"]))
-      | Done (Ready_to_copy_in _) ->
-        let reason = "COPY FROM STDIN is not appropriate for [Postgres_async.query]" in
-        let%bind (Connection_closed _ | Done ()) = abort_copy_in t ~reason in
-        return (Done (Or_pgasync_error.error_string reason))
-      | Done (Remote_reported_error error) -> return (Done (Error error))
-      | Done Empty_query -> return (Done (Ok Command_complete.empty))
-      | Done (Command_complete_without_output command_complete) ->
-        return (Done (Ok command_complete))
-      | Done (About_to_deliver_rows description) ->
-        handle_columns description;
-        let init = prepare ~about_to_deliver_rows:description in
-        read_datarows t ~pushback ~f:(fun ~datarow_iobuf ->
-          handle_row init ~description ~datarow_iobuf)
+    let%bind setup_result =
+      match result_format_for_oid with
+      | None ->
+        parse_and_start_executing_query t query_string ~parameters
+        >>| fun result -> Ok result
+      | Some result_format_for_oid ->
+        (match%bind parse_and_describe_statement t query_string with
+         | Connection_closed error -> return (Error error)
+         | Done (Error error) ->
+           sync_and_recover_after_describe_statement_error t error
+           >>| fun error -> Error error
+         | Done (Ok statement_description) ->
+           let result_formats =
+             Iarray.map statement_description ~f:(fun column ->
+               result_format_for_oid (Column_metadata.pg_type_oid column))
+           in
+           (match Iarray.exists result_formats ~f:Option.is_none with
+            | true ->
+              sync_and_recover_after_describe_statement_error
+                t
+                (Pgasync_error.of_string "result format selector raised")
+              >>| fun error -> Error error
+            | false ->
+              let result_formats =
+                Iarray.map result_formats ~f:(fun format -> Option.value_exn format)
+              in
+              bind_and_start_executing_query t ~parameters ~result_formats
+              >>| fun result -> Ok result))
     in
-    handle_ready_for_query t result
+    match setup_result with
+    | Error error -> return (Error error)
+    | Ok setup_result ->
+      let%bind result =
+        match setup_result with
+        | Connection_closed _ as err -> return err
+        | Done About_to_copy_out ->
+          let%bind (Connection_closed _ | Done ()) = drain_copy_out t in
+          return
+            (Done
+               (Or_pgasync_error.error_s
+                  [%message
+                    "COPY TO STDOUT is not appropriate for [Postgres_async.query]"]))
+        | Done (Ready_to_copy_in _) ->
+          let reason = "COPY FROM STDIN is not appropriate for [Postgres_async.query]" in
+          let%bind (Connection_closed _ | Done ()) = abort_copy_in t ~reason in
+          return (Done (Or_pgasync_error.error_string reason))
+        | Done (Remote_reported_error error) -> return (Done (Error error))
+        | Done Empty_query -> return (Done (Ok Command_complete.empty))
+        | Done (Command_complete_without_output command_complete) ->
+          return (Done (Ok command_complete))
+        | Done (About_to_deliver_rows description) ->
+          handle_columns description;
+          let init = prepare ~about_to_deliver_rows:description in
+          read_datarows t ~pushback ~f:(fun ~datarow_iobuf ->
+            handle_row init ~description ~datarow_iobuf)
+      in
+      handle_ready_for_query t result
   ;;
 
   let internal_query_zero_copy
     t
     ?parameters
+    ?result_format_for_oid
     ?pushback
     ~handle_columns
     query_string
-    ~(handle_row : local_ Row_handle.t -> unit)
+    ~(handle_row : Row_handle.t @ local -> unit)
     =
     internal_query_gen
       t
       ?parameters
+      ?result_format_for_oid
       ?pushback
       ~handle_columns
       query_string
@@ -1629,6 +1928,18 @@ module Expert_with_command_complete = struct
         ({ global = arg } : _ Modes.Global.t) [@nontail]
     ;;
 
+    let wrap_result t ~f arg ~on_exception =
+      match t.callback_raised with
+      | true -> on_exception
+      | false ->
+        (match f arg with
+         | result -> result
+         | exception exn ->
+           Monitor.send_exn (Monitor.current ()) exn;
+           t.callback_raised <- true;
+           on_exception)
+    ;;
+
     let complete t ~result ~parameters ~query_string =
       match t.callback_raised with
       | true -> Deferred.never ()
@@ -1662,8 +1973,24 @@ module Expert_with_command_complete = struct
     Callback_wrapper.complete callback_wrapper ~result ~query_string ~parameters
   ;;
 
-  let query_zero_copy t ?parameters ?pushback ?handle_columns query_string ~handle_row =
+  let query_zero_copy
+    t
+    ?parameters
+    ?result_format_for_oid
+    ?pushback
+    ?handle_columns
+    query_string
+    ~handle_row
+    =
     let callback_wrapper = Callback_wrapper.create () in
+    let result_format_for_oid =
+      Option.map result_format_for_oid ~f:(fun result_format_for_oid oid ->
+        Callback_wrapper.wrap_result
+          callback_wrapper
+          ~f:(fun oid -> Some (result_format_for_oid oid))
+          oid
+          ~on_exception:None)
+    in
     let handle_columns description =
       match handle_columns with
       | None -> ()
@@ -1674,6 +2001,7 @@ module Expert_with_command_complete = struct
         internal_query_zero_copy
           t
           ?parameters
+          ?result_format_for_oid
           ?pushback
           ~handle_columns
           query_string
@@ -1873,10 +2201,16 @@ module Expert_with_command_complete = struct
     in
     let%bind result =
       Query_sequencer.enqueue t.sequencer (fun () ->
-        catch_write_errors t ~flush_message:Write_afterwards ~f:(fun writer ->
-          Protocol.Frontend.Writer.query writer query_string);
+        (* [with_open_connection] re-checks [t.state] when our turn on the sequencer comes
+           up, exactly like the extended-query path does (via
+           [parse_and_start_executing_query]). Without this, a simple query that was
+           queued behind an in-flight query when [close] was called would write its
+           [Query] message after [Terminate] has already been sent. *)
         let%map return_status =
-          handle_simple_query_messages ?pushback t ~handle_columns ~handle_row
+          with_open_connection t ~f:(fun () ->
+            catch_write_errors t ~flush_message:Write_afterwards ~f:(fun writer ->
+              Protocol.Frontend.Writer.query writer query_string);
+            handle_simple_query_messages ?pushback t ~handle_columns ~handle_row)
         in
         match return_status with
         | Connection_closed error -> Simple_query_result.Connection_error error
@@ -2035,9 +2369,9 @@ module Expert_with_command_complete = struct
          (Done (Or_pgasync_error.error_s [%message "Query did not initiate copy-in mode"])))
   ;;
 
-  (* [internal_copy_in_raw] is to [copy_in_raw] as [internal_query] is to [query].
-     Sequencer and exception handling. *)
-  let internal_copy_in_raw t ?(parameters = [||]) query_string ~feed_data =
+  (* [internal_copy_in] is to [copy_in] as [internal_query] is to [query]. Sequencer and
+     exception handling. *)
+  let internal_copy_in t ?(parameters = [||]) query_string ~feed_data ~write_data =
     let%bind result =
       match%bind parse_and_start_executing_query t query_string ~parameters with
       | Connection_closed _ as err -> return err
@@ -2088,7 +2422,7 @@ module Expert_with_command_complete = struct
             | Wait deferred -> continue ~after:deferred
             | Data payload ->
               catch_write_errors t ~flush_message:Not_required ~f:(fun writer ->
-                Protocol.Frontend.Writer.copy_data writer payload);
+                write_data writer payload);
               (match bytes_pending_in_writer_buffer t > t.buffer_byte_limit with
                | false -> loop ()
                | true -> continue ~after:(wait_for_writer_buffer_to_be_empty t))
@@ -2132,7 +2466,7 @@ module Expert_with_command_complete = struct
     | Ok result -> return (Ok result)
   ;;
 
-  let copy_in_raw t ?parameters query_string ~feed_data =
+  let copy_in t ?parameters query_string ~feed_data ~write_data =
     let callback_raised = ref false in
     let feed_data () =
       (* We shouldn't be called again after [Abort] *)
@@ -2146,11 +2480,106 @@ module Expert_with_command_complete = struct
     in
     let%bind result =
       Query_sequencer.enqueue t.sequencer (fun () ->
-        internal_copy_in_raw t ?parameters query_string ~feed_data)
+        internal_copy_in t ?parameters query_string ~feed_data ~write_data)
     in
     match !callback_raised with
     | true -> Deferred.never ()
     | false -> return result
+  ;;
+
+  let copy_in_raw t ?parameters query_string ~feed_data =
+    copy_in
+      t
+      ?parameters
+      query_string
+      ~feed_data
+      ~write_data:Protocol.Frontend.Writer.copy_data
+  ;;
+
+  type 'a binary_copy_row =
+    { value : 'a
+    ; length : int
+    }
+
+  type 'a binary_copy_payload =
+    | Header
+    | Row of 'a binary_copy_row
+    | Trailer
+
+  (* see
+     https://www.postgresql.org/docs/current/sql-copy.html#:~:text=programs%20cannot%20process.-,Binary%20Format,-The%20binary%20format *)
+
+  let binary_copy_header = "PGCOPY\n\255\r\n\000\000\000\000\000\000\000\000\000"
+  let binary_copy_trailer = "\255\255"
+
+  module Copy_in_binary_state = struct
+    type t =
+      | Start
+      | Sent_header
+      | Sent_trailer
+  end
+
+  let[@cold] invalid_copy_payload_length ~length =
+    let max_length = Protocol.Shared.CopyData.max_payload_length in
+    raise_s
+      [%message
+        "Binary COPY row length is out of range" (length : int) (max_length : int)]
+  ;;
+
+  let check_copy_payload_length ~length =
+    if Bool.Branch_free.(
+         length < 0 || length > Protocol.Shared.CopyData.max_payload_length)
+    then invalid_copy_payload_length ~length
+  ;;
+
+  let copy_in_binary
+    ?schema_name
+    t
+    ~table_name
+    ~column_names
+    ~feed_data
+    ~payload_length
+    ~fill_payload
+    =
+    let query_string =
+      String_escaping.Copy_in.query
+        ?schema_name
+        ~format:Binary
+        ~table_name
+        ~column_names
+        ()
+    in
+    let write_row =
+      Protocol.Shared.CopyData.write_message
+        ~payload_length:(fun { length; _ } -> length)
+        ~fill:(fun { value; _ } -> fill_payload value)
+      |> Staged.unstage
+    in
+    let state = ref Copy_in_binary_state.Start in
+    let feed_data () =
+      match !state with
+      | Start ->
+        state := Sent_header;
+        Data Header
+      | Sent_trailer -> Finished
+      | Sent_header ->
+        (match feed_data () with
+         | Abort _ as result -> result
+         | Wait _ as result -> result
+         | Data value ->
+           let length = payload_length value in
+           check_copy_payload_length ~length;
+           Data (Row { value; length })
+         | Finished ->
+           state := Sent_trailer;
+           Data Trailer)
+    in
+    let write_data writer = function
+      | Header -> Protocol.Frontend.Writer.copy_data writer binary_copy_header
+      | Row row -> write_row writer row
+      | Trailer -> Protocol.Frontend.Writer.copy_data writer binary_copy_trailer
+    in
+    copy_in t query_string ~feed_data ~write_data
   ;;
 
   (* [copy_in_rows] builds on [copy_in_raw] and clearly doesn't raise exceptions in the
@@ -2286,6 +2715,26 @@ module With_command_complete = struct
     >>| Or_pgasync_error.to_or_error
   ;;
 
+  let copy_in_binary
+    ?schema_name
+    t
+    ~table_name
+    ~column_names
+    ~feed_data
+    ~payload_length
+    ~fill_payload
+    =
+    Expert_with_command_complete.copy_in_binary
+      ?schema_name
+      t
+      ~table_name
+      ~column_names
+      ~feed_data
+      ~payload_length
+      ~fill_payload
+    >>| Or_pgasync_error.to_or_error
+  ;;
+
   let copy_in_rows ?schema_name t ~table_name ~column_names ~feed_data =
     Expert_with_command_complete.copy_in_rows
       ?schema_name
@@ -2317,10 +2766,19 @@ module With_command_complete = struct
     >>| Or_pgasync_error.to_or_error
   ;;
 
-  let query_zero_copy t ?parameters ?pushback ?handle_columns query_string ~handle_row =
+  let query_zero_copy
+    t
+    ?parameters
+    ?result_format_for_oid
+    ?pushback
+    ?handle_columns
+    query_string
+    ~handle_row
+    =
     Expert_with_command_complete.query_zero_copy
       t
       ?parameters
+      ?result_format_for_oid
       ?pushback
       ?handle_columns
       query_string
@@ -2337,6 +2795,26 @@ module Expert = struct
     >>| Result.map ~f:(const ())
   ;;
 
+  let copy_in_binary
+    ?schema_name
+    t
+    ~table_name
+    ~column_names
+    ~feed_data
+    ~payload_length
+    ~fill_payload
+    =
+    Expert_with_command_complete.copy_in_binary
+      ?schema_name
+      t
+      ~table_name
+      ~column_names
+      ~feed_data
+      ~payload_length
+      ~fill_payload
+    >>| Result.map ~f:(const ())
+  ;;
+
   let copy_in_rows ?schema_name t ~table_name ~column_names ~feed_data =
     Expert_with_command_complete.copy_in_rows
       ?schema_name
@@ -2368,10 +2846,19 @@ module Expert = struct
     >>| Result.map ~f:(const ())
   ;;
 
-  let query_zero_copy t ?parameters ?pushback ?handle_columns query_string ~handle_row =
+  let query_zero_copy
+    t
+    ?parameters
+    ?result_format_for_oid
+    ?pushback
+    ?handle_columns
+    query_string
+    ~handle_row
+    =
     Expert_with_command_complete.query_zero_copy
       t
       ?parameters
+      ?result_format_for_oid
       ?pushback
       ?handle_columns
       query_string
@@ -2484,6 +2971,26 @@ let copy_in_raw t ?parameters query_string ~feed_data =
   >>| Or_pgasync_error.to_or_error
 ;;
 
+let copy_in_binary
+  ?schema_name
+  t
+  ~table_name
+  ~column_names
+  ~feed_data
+  ~payload_length
+  ~fill_payload
+  =
+  Expert.copy_in_binary
+    ?schema_name
+    t
+    ~table_name
+    ~column_names
+    ~feed_data
+    ~payload_length
+    ~fill_payload
+  >>| Or_pgasync_error.to_or_error
+;;
+
 let copy_in_rows ?schema_name t ~table_name ~column_names ~feed_data =
   Expert.copy_in_rows ?schema_name t ~table_name ~column_names ~feed_data
   >>| Or_pgasync_error.to_or_error
@@ -2503,8 +3010,23 @@ let query t ?parameters ?pushback ?handle_columns query_string ~handle_row =
   >>| Or_pgasync_error.to_or_error
 ;;
 
-let query_zero_copy t ?parameters ?pushback ?handle_columns query_string ~handle_row =
-  Expert.query_zero_copy t ?parameters ?pushback ?handle_columns query_string ~handle_row
+let query_zero_copy
+  t
+  ?parameters
+  ?result_format_for_oid
+  ?pushback
+  ?handle_columns
+  query_string
+  ~handle_row
+  =
+  Expert.query_zero_copy
+    t
+    ?parameters
+    ?result_format_for_oid
+    ?pushback
+    ?handle_columns
+    query_string
+    ~handle_row
   >>| Result.map ~f:(const ())
   >>| Or_pgasync_error.to_or_error
 ;;

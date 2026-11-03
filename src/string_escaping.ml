@@ -1,11 +1,17 @@
 open Core
 open! Int.Replace_polymorphic_compare
 
-let escape_identifier s =
-  String.split s ~on:'.'
-  |> List.map ~f:(fun s ->
-    "\"" ^ String.substr_replace_all s ~pattern:"\"" ~with_:"\"\"" ^ "\"")
-  |> String.concat ~sep:"."
+let escape_identifier_part (s @ local) = exclave_
+  let escaped =
+    (String.substr_replace_all [@alloc stack]) s ~pattern:"\"" ~with_:"\"\""
+  in
+  [%string.stack {|"%{escaped}"|}]
+;;
+
+let escape_identifier (s @ local) = exclave_
+  (String.split [@alloc stack]) s ~on:'.'
+  |> (List.map [@mode local] [@alloc stack]) ~f:escape_identifier_part
+  |> (String.concat [@alloc stack]) ~sep:"."
 ;;
 
 (* temporary escape hatch in case we break someone's code *)
@@ -14,12 +20,16 @@ let quote_table_name_requested =
 ;;
 
 module Copy_in = struct
-  let query ?schema_name ~table_name ~column_names () =
+  type format =
+    | Text
+    | Binary
+
+  let query ?schema_name ?(format = Text) ~table_name ~column_names () =
     let column_names =
       (if Lazy.force quote_table_name_requested
-       then List.map column_names ~f:escape_identifier
+       then (List.map [@mode local] [@alloc stack]) column_names ~f:escape_identifier
        else column_names)
-      |> String.concat ~sep:", "
+      |> (String.concat [@alloc stack]) ~sep:", "
     in
     let table_name =
       if Lazy.force quote_table_name_requested
@@ -29,10 +39,20 @@ module Copy_in = struct
     let table_name =
       match schema_name with
       | None -> table_name
-      | Some schema -> schema ^ "." ^ table_name
+      | Some schema ->
+        let schema =
+          if Lazy.force quote_table_name_requested
+          then escape_identifier_part schema
+          else schema
+        in
+        [%string.stack "%{schema}.%{table_name}"]
     in
-    [%string
-      "COPY %{table_name} ( %{column_names} ) FROM STDIN ( FORMAT text,  DELIMITER '\t')"]
+    let format =
+      match format with
+      | Text -> "FORMAT text, DELIMITER '\t'"
+      | Binary -> "FORMAT binary"
+    in
+    [%string "COPY %{table_name} ( %{column_names} ) FROM STDIN ( %{format} )"]
   ;;
 
   let special_escape char =
@@ -92,5 +112,5 @@ module Copy_in = struct
 end
 
 module Listen = struct
-  let query ~channel = sprintf !"LISTEN %{escape_identifier}" channel
+  let query ~channel = [%string "LISTEN %{escape_identifier channel}"]
 end

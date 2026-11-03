@@ -173,9 +173,6 @@ module CloseComplete : sig
 end
 
 module RowDescription : sig
-  (** Technically [format] could be [`Binary], but since [Frontend.Bind] doesn't ever ask
-      for binary output right now, it's impossible to receive it from the server, and
-      [consume] will reject it for simplicity. *)
   type t = Column_metadata.t iarray
 
   val consume : ([> read ], seek, Iobuf.global) Iobuf.t -> t Or_error.t

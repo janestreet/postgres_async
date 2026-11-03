@@ -21,9 +21,8 @@ depends: [
   "ppx_jane"
   "base64"       {>= "3.4.0"}
   "cryptokit"    {>= "1.16" & < "1.17"}
-  "cstruct"      {>= "6.0.0"}
   "dune"         {>= "3.17.0"}
-  "pbkdf"
+  "kdf"
 ]
 available: arch != "x86_32"
 conflicts: [

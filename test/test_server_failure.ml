@@ -161,6 +161,276 @@ let send_eof writer =
   return ()
 ;;
 
+let read_frontend_message reader =
+  let%bind message_type =
+    match%map Reader.read_char reader with
+    | `Ok char -> char
+    | `Eof -> failwith "unexpected EOF reading frontend message type"
+  in
+  let length_bytes = Bytes.create 4 in
+  let%bind () =
+    match%map Reader.really_read reader length_bytes with
+    | `Ok -> ()
+    | `Eof _ -> failwith "unexpected EOF reading frontend message length"
+  in
+  let byte index = Char.to_int (Bytes.get length_bytes index) in
+  let length = (byte 0 lsl 24) lor (byte 1 lsl 16) lor (byte 2 lsl 8) lor byte 3 in
+  let payload = Bytes.create (length - 4) in
+  let%map () =
+    match%map Reader.really_read reader payload with
+    | `Ok -> ()
+    | `Eof _ -> failwith "unexpected EOF reading frontend message payload"
+  in
+  message_type
+;;
+
+let rec read_frontend_messages_through reader ~last_message_type reversed_message_types =
+  let%bind message_type = read_frontend_message reader in
+  let reversed_message_types = message_type :: reversed_message_types in
+  match Char.equal message_type last_message_type with
+  | true -> return (List.rev reversed_message_types)
+  | false ->
+    read_frontend_messages_through reader ~last_message_type reversed_message_types
+;;
+
+let row_description_message format =
+  let iobuf = Iobuf.create ~len:27 in
+  Iobuf.Fill.char iobuf 'T';
+  Iobuf.Fill.int32_be_trunc iobuf 26;
+  Iobuf.Fill.int16_be_trunc iobuf 1;
+  Iobuf.Fill.stringo iobuf "b";
+  Iobuf.Fill.char iobuf '\000';
+  Iobuf.Fill.int32_be_trunc iobuf 0;
+  Iobuf.Fill.int16_be_trunc iobuf 0;
+  Iobuf.Fill.int32_be_trunc iobuf 17;
+  Iobuf.Fill.int16_be_trunc iobuf (-1);
+  Iobuf.Fill.int32_be_trunc iobuf (-1);
+  Iobuf.Fill.int16_be_trunc iobuf format;
+  Iobuf.flip_lo iobuf;
+  Iobuf.Consume.stringo iobuf
+;;
+
+let%expect_test "default and mixed-format frontend message sequences" =
+  let parse_complete = "1\x00\x00\x00\x04" in
+  let bind_complete = "2\x00\x00\x00\x04" in
+  let parameter_description = "t\x00\x00\x00\x06\x00\x00" in
+  let text_row_description = row_description_message 0 in
+  let binary_row_description = row_description_message 1 in
+  let command_complete = "C\x00\x00\x00\x06_\x00" in
+  let ready_for_query = "Z\x00\x00\x00\x05I" in
+  let handle_client reader writer =
+    let startup_message = Bytes.create 41 in
+    let%bind () =
+      match%map Reader.really_read reader startup_message with
+      | `Ok -> ()
+      | `Eof _ -> failwith "unexpected EOF reading startup message"
+    in
+    Writer.write writer accept_login;
+    let%bind default_messages =
+      read_frontend_messages_through reader ~last_message_type:'S' []
+    in
+    print_s [%message (default_messages : char list)];
+    Writer.write
+      writer
+      (parse_complete
+       ^ bind_complete
+       ^ text_row_description
+       ^ command_complete
+       ^ ready_for_query);
+    let%bind describe_messages =
+      read_frontend_messages_through reader ~last_message_type:'H' []
+    in
+    print_s [%message (describe_messages : char list)];
+    Writer.write writer (parse_complete ^ parameter_description ^ text_row_description);
+    let%bind execute_messages =
+      read_frontend_messages_through reader ~last_message_type:'S' []
+    in
+    print_s [%message (execute_messages : char list)];
+    Writer.write
+      writer
+      (bind_complete ^ binary_row_description ^ command_complete ^ ready_for_query);
+    let%map (_ : [ `Eof | `Ok of char ]) = Reader.read_char reader in
+    ()
+  in
+  let%bind () =
+    with_manual_server ~handle_client ~f:(fun where_to_connect ->
+      Postgres_async.with_connection
+        ~server:where_to_connect
+        ~user:"postgres"
+        ~database:"postgres"
+        ~on_handler_exception:`Raise
+        (fun postgres ->
+           let%bind () =
+             Postgres_async.query_zero_copy postgres "<default>" ~handle_row:(fun _ -> ())
+             >>| ok_exn
+           in
+           let result_format_for_oid oid : Postgres_async.Types.Format.t =
+             print_s [%message (oid : int)];
+             Binary
+           in
+           Postgres_async.query_zero_copy
+             postgres
+             ~result_format_for_oid
+             ~handle_columns:(fun columns ->
+               let columns =
+                 Iarray.map columns ~f:(fun column ->
+                   ( Postgres_async.Column_metadata.name column
+                   , Postgres_async.Column_metadata.format column
+                   , Postgres_async.Column_metadata.pg_type_oid column ))
+               in
+               print_s
+                 [%sexp (columns : (string * Postgres_async.Types.Format.t * int) iarray)])
+             "<mixed>"
+             ~handle_row:(fun _ -> ())
+           >>| ok_exn)
+      >>| ok_exn)
+  in
+  [%expect
+    {|
+    (default_messages (P B D E S))
+    (describe_messages (P D H))
+    (oid 17)
+    (execute_messages (B D E S))
+    ((b Binary 17))
+    |}];
+  return ()
+;;
+
+let%expect_test "phase-one error sends Sync before connection reuse" =
+  let parse_complete = "1\x00\x00\x00\x04" in
+  let bind_complete = "2\x00\x00\x00\x04" in
+  let parameter_description = "t\x00\x00\x00\x06\x00\x00" in
+  let text_row_description = row_description_message 0 in
+  let command_complete = "C\x00\x00\x00\x06_\x00" in
+  let ready_for_query = "Z\x00\x00\x00\x05I" in
+  let handle_client reader writer =
+    let startup_message = Bytes.create 41 in
+    let%bind () =
+      match%map Reader.really_read reader startup_message with
+      | `Ok -> ()
+      | `Eof _ -> failwith "unexpected EOF reading startup message"
+    in
+    Writer.write writer accept_login;
+    let%bind describe_messages =
+      read_frontend_messages_through reader ~last_message_type:'H' []
+    in
+    print_s [%message (describe_messages : char list)];
+    Writer.write writer (parse_complete ^ parameter_description);
+    Postgres_async.Private.Protocol.Backend.Writer.error_response
+      writer
+      { error_code = "40001"
+      ; all_fields = [ Severity, "ERROR"; Message, "error describing statement" ]
+      };
+    let%bind recovery_messages =
+      read_frontend_messages_through reader ~last_message_type:'S' []
+    in
+    print_s [%message (recovery_messages : char list)];
+    Writer.write writer ready_for_query;
+    let%bind reuse_messages =
+      read_frontend_messages_through reader ~last_message_type:'S' []
+    in
+    print_s [%message (reuse_messages : char list)];
+    Writer.write
+      writer
+      (parse_complete
+       ^ bind_complete
+       ^ text_row_description
+       ^ command_complete
+       ^ ready_for_query);
+    let%map (_ : [ `Eof | `Ok of char ]) = Reader.read_char reader in
+    ()
+  in
+  let%bind () =
+    with_manual_server ~handle_client ~f:(fun where_to_connect ->
+      Postgres_async.with_connection
+        ~server:where_to_connect
+        ~user:"postgres"
+        ~database:"postgres"
+        ~on_handler_exception:`Raise
+        (fun postgres ->
+           let%bind result =
+             Postgres_async.query_zero_copy
+               postgres
+               ~result_format_for_oid:(fun (_ : int) -> Binary)
+               "<phase-one-error>"
+               ~handle_row:(fun _ -> ())
+           in
+           (match result with
+            | Ok () -> print_endline "unexpected success"
+            | Error error ->
+              let error = Utils.delete_unstable_bits_of_error (Error.sexp_of_t error) in
+              print_s [%message "Error" ~_:(error : Sexp.t)]);
+           Postgres_async.query_zero_copy postgres "<reuse>" ~handle_row:(fun _ -> ())
+           >>| ok_exn)
+      >>| ok_exn)
+  in
+  [%expect
+    {|
+    (describe_messages (P D H))
+    (recovery_messages (S))
+    (Error (
+      (query <phase-one-error>)
+      ("Postgres Server Error (state=Describing_statement)" ((Code 40001)))))
+    (reuse_messages (P B D E S))
+    |}];
+  return ()
+;;
+
+let%expect_test "fatal error without ReadyForQuery is preserved" =
+  let parse_complete = "1\x00\x00\x00\x04" in
+  let bind_complete = "2\x00\x00\x00\x04" in
+  let command_complete = "C\x00\x00\x00\x06_\x00" in
+  let handle_client reader writer =
+    let startup_message = Bytes.create 41 in
+    let%bind () =
+      match%map Reader.really_read reader startup_message with
+      | `Ok -> ()
+      | `Eof _ -> failwith "unexpected EOF reading startup message"
+    in
+    Writer.write writer accept_login;
+    let%bind (_ : char list) =
+      read_frontend_messages_through reader ~last_message_type:'S' []
+    in
+    Writer.write
+      writer
+      (parse_complete ^ bind_complete ^ row_description_message 0 ^ command_complete);
+    Postgres_async.Private.Protocol.Backend.Writer.error_response
+      writer
+      { error_code = "57P01"
+      ; all_fields = [ Severity, "FATAL"; Message, "terminating connection" ]
+      };
+    let%bind () = send_eof writer in
+    Deferred.never ()
+  in
+  let%bind () =
+    with_manual_server ~handle_client ~f:(fun where_to_connect ->
+      Postgres_async.with_connection
+        ~server:where_to_connect
+        ~user:"postgres"
+        ~database:"postgres"
+        ~on_handler_exception:`Raise
+        (fun postgres ->
+           let%map result =
+             Postgres_async.query_zero_copy postgres "<fatal>" ~handle_row:(fun _ -> ())
+           in
+           match result with
+           | Ok () -> print_endline "unexpected success"
+           | Error error ->
+             let error = Utils.delete_unstable_bits_of_error (Error.sexp_of_t error) in
+             print_s [%message "Error" ~_:(error : Sexp.t)])
+      >>| ok_exn)
+  in
+  [%expect
+    {|
+    (Error (
+      (query <fatal>)
+      ("Error waiting for ReadyForQuery (after query execution finished)"
+       ((Code     57P01)
+        (Severity FATAL)))))
+    |}];
+  return ()
+;;
+
 let%expect_test "invaild messages during login" =
   let try_connect ?(send_eof_after_response = true) response =
     with_manual_server
@@ -418,15 +688,7 @@ let%expect_test "invalid messages during query_expect_no_data" =
       Error (
         (query <dummy>)
         ("Failed to parse RowDescription" (
-          exn (
-            "Iobuf got invalid range" (
-              ((pos 0)
-               (len 1))
-              ((buf    <opaque>)
-               (lo_min 0)
-               (lo     17)
-               (hi     17)
-               (hi_max 17)))))))))
+          exn (Failure "find_null_exn could not find \\x00"))))))
     close_finished is determined with an error
     (outer_result (Ok _))
     |}];
@@ -604,4 +866,232 @@ let%expect_test "asynchronous writer failure during query" =
         (outer_result (Ok ()))
         |}];
       return ())
+;;
+
+(* The two ways the bounded graceful close can time out (see
+   [do_close_gracefully_if_possible]): *)
+
+let%expect_test "server that never hangs up after [Terminate]: close is abrupt but \
+                 successful"
+  =
+  with_manual_server
+    ~handle_client:(fun reader writer ->
+      (* wait for the startup message. *)
+      let%bind _ = Reader.read_char reader in
+      Writer.write writer accept_login;
+      (* Swallow everything else (including [Terminate]) and never close our end; the
+         client should give up waiting for our EOF and hang up regardless. *)
+      Reader.drain reader)
+    ~f:(fun where_to_connect ->
+      let%bind postgres =
+        Postgres_async.connect
+          ()
+          ~server:where_to_connect
+          ~user:"postgres"
+          ~database:"postgres"
+        >>| Or_error.ok_exn
+      in
+      let%bind close_result = Postgres_async.close postgres in
+      print_or_error close_result;
+      let%bind close_finished = Postgres_async.close_finished postgres in
+      print_or_error close_finished;
+      [%expect
+        {|
+        (Ok ())
+        (Ok ())
+        |}];
+      return ())
+;;
+
+let%expect_test "close while a query is queued but not yet started: the query is refused \
+                 and the close is clean"
+  =
+  with_manual_server
+    ~handle_client:(fun reader writer ->
+      (* wait for the startup message. *)
+      let%bind _ = Reader.read_char reader in
+      Writer.write writer accept_login;
+      (* Never respond to the query, and never close our end. *)
+      Reader.drain reader)
+    ~f:(fun where_to_connect ->
+      let%bind postgres =
+        Postgres_async.connect
+          ()
+          ~server:where_to_connect
+          ~user:"postgres"
+          ~database:"postgres"
+        >>| Or_error.ok_exn
+      in
+      (* [close] is called before the query's turn on the sequencer comes up, so the query
+         refuses to run and nothing is written after [Terminate]. *)
+      let query_result = Postgres_async.query_expect_no_data postgres "<dummy>" in
+      let%bind close_result = Postgres_async.close postgres in
+      print_or_error close_result;
+      let%bind query_result in
+      print_or_error query_result;
+      [%expect
+        {|
+        (Ok ())
+        (Error ((query <dummy>) "query issued against connection closed by user"))
+        |}];
+      return ())
+;;
+
+let%expect_test "close while a query is wedged on an unresponsive server: close times \
+                 out with an error (and interrupts the query)"
+  =
+  let query_reached_server = Ivar.create () in
+  with_manual_server
+    ~handle_client:(fun reader writer ->
+      (* consume the whole startup message: an int32 length (which includes itself), then
+         the payload. *)
+      let read_exactly n =
+        let buf = Bytes.create n in
+        match%map Reader.really_read reader buf with
+        | `Ok -> Bytes.to_string buf
+        | `Eof (_ : int) -> raise_s [%message "unexpected EOF in test server"]
+      in
+      let%bind startup_length = read_exactly 4 in
+      let startup_length =
+        String.fold startup_length ~init:0 ~f:(fun acc c -> (acc * 256) + Char.to_int c)
+      in
+      let%bind (_ : string) = read_exactly (startup_length - 4) in
+      Writer.write writer accept_login;
+      (* wait for the first byte of the query, then go silent: never respond, and never
+         close our end. *)
+      let%bind (_ : string) = read_exactly 1 in
+      Ivar.fill_exn query_reached_server ();
+      Reader.drain reader)
+    ~f:(fun where_to_connect ->
+      let%bind postgres =
+        Postgres_async.connect
+          ()
+          ~server:where_to_connect
+          ~user:"postgres"
+          ~database:"postgres"
+        >>| Or_error.ok_exn
+      in
+      let query_result = Postgres_async.query_expect_no_data postgres "<dummy>" in
+      let%bind () = Ivar.read query_reached_server in
+      let%bind close_result = Postgres_async.close postgres in
+      print_or_error close_result;
+      let%bind query_result in
+      print_or_error query_result;
+      [%expect
+        {|
+        (Error
+         "close: an in-flight query did not finish within the close grace period, so the connection was torn down forcibly")
+        (Error (
+          (query <dummy>)
+          "close: an in-flight query did not finish within the close grace period, so the connection was torn down forcibly"))
+        |}];
+      return ())
+;;
+
+let%expect_test "close while a simple query is queued behind an in-flight query: the \
+                 simple query is refused and nothing is written after [Terminate]"
+  =
+  (* Unlike the extended-query path, [simple_query]'s sequencer job used to write its
+     [Query] message without re-checking [t.state], so a simple query queued behind an
+     in-flight query when [close] was called would write behind the already-sent
+     [Terminate]. The server checks that [Terminate] is the last thing on the wire. *)
+  let parse_complete = "1\x00\x00\x00\x04" in
+  let bind_complete = "2\x00\x00\x00\x04" in
+  let no_data = "n\x00\x00\x00\x04" in
+  let command_complete = "C\x00\x00\x00\x06_\x00" in
+  let ready_for_query = "Z\x00\x00\x00\x05I" in
+  let close_called = Ivar.create () in
+  let server_events = Queue.create () in
+  let server_done = Ivar.create () in
+  let handle_client reader writer =
+    (* consume the whole startup message: an int32 length (which includes itself), then
+       the payload. *)
+    let read_exactly n =
+      let buf = Bytes.create n in
+      match%map Reader.really_read reader buf with
+      | `Ok -> Bytes.to_string buf
+      | `Eof (_ : int) -> raise_s [%message "unexpected EOF in test server"]
+    in
+    let%bind startup_length = read_exactly 4 in
+    let startup_length =
+      String.fold startup_length ~init:0 ~f:(fun acc c -> (acc * 256) + Char.to_int c)
+    in
+    let%bind (_ : string) = read_exactly (startup_length - 4) in
+    Writer.write writer accept_login;
+    (* Read the in-flight query's messages through [Sync]; it now holds the client-side
+       sequencer, with the simple query queued behind it. *)
+    let%bind (_ : char list) =
+      read_frontend_messages_through reader ~last_message_type:'S' []
+    in
+    let%bind () = Ivar.read close_called in
+    (* Complete the in-flight query. *)
+    Writer.write
+      writer
+      (parse_complete ^ bind_complete ^ no_data ^ command_complete ^ ready_for_query);
+    let%bind () = Writer.flushed writer in
+    (* [Terminate] was written the moment [close] was called; it should be the next and
+       last thing we see. (We never hang up ourselves, so the EOF below only arrives once
+       the client's close grace period expires and it tears the socket down; the
+       connection was idle by then, so that close still reports success.) *)
+    let%bind msg = read_frontend_message reader in
+    Queue.enqueue
+      server_events
+      [%message "message after query completion" ~_:(msg : char)];
+    let%bind () =
+      match%map Reader.read_char reader with
+      | `Eof -> Queue.enqueue server_events [%message "EOF after Terminate"]
+      | `Ok c ->
+        Queue.enqueue
+          server_events
+          [%message "data written after Terminate" ~_:(c : char)]
+    in
+    Ivar.fill_exn server_done ();
+    Deferred.never ()
+  in
+  with_manual_server ~handle_client ~f:(fun where_to_connect ->
+    let%bind postgres =
+      Postgres_async.connect
+        ()
+        ~server:where_to_connect
+        ~user:"postgres"
+        ~database:"postgres"
+      >>| Or_error.ok_exn
+    in
+    let in_flight_query = Postgres_async.query_expect_no_data postgres "<in-flight>" in
+    let%bind () = Scheduler.yield_until_no_jobs_remain () in
+    let queued_simple_query =
+      match%map
+        Postgres_async.Private.execute_simple postgres "<queued simple query>"
+      with
+      | Completed_with_no_warnings (_ : Postgres_async.Command_complete.t list) -> Ok ()
+      | Completed_with_warnings ((_ : Postgres_async.Command_complete.t list), warnings)
+        -> Or_error.error_s [%message "completed with warnings" (warnings : Error.t list)]
+      | Failed e | Connection_error e | Driver_error e ->
+        Error (Postgres_async.Private.Pgasync_error.to_error e)
+    in
+    let%bind () = Scheduler.yield_until_no_jobs_remain () in
+    let close_result = Postgres_async.close postgres in
+    let%bind () = Scheduler.yield_until_no_jobs_remain () in
+    Ivar.fill_exn close_called ();
+    let%bind in_flight_result = in_flight_query in
+    let%bind queued_simple_result = queued_simple_query in
+    let%bind close_result in
+    let%bind () = Ivar.read server_done in
+    Queue.iter server_events ~f:(fun event ->
+      print_s [%message "server" ~_:(event : Sexp.t)]);
+    print_s [%message "in-flight query" ~_:(in_flight_result : unit Or_error.t)];
+    print_s [%message "queued simple query" ~_:(queued_simple_result : unit Or_error.t)];
+    print_s [%message "close" ~_:(close_result : unit Or_error.t)];
+    [%expect
+      {|
+      (server ("message after query completion" X))
+      (server "EOF after Terminate")
+      ("in-flight query" (Ok ()))
+      ("queued simple query" (
+        Error (
+          (query "<queued simple query>")
+          "query issued against connection closed by user")))
+      (close (Ok ()))
+      |}];
+    return ())
 ;;

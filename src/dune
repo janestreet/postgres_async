@@ -2,7 +2,7 @@
  (name postgres_async)
  (public_name postgres_async)
  (libraries async async_ssl async_unix base64 core_kernel.bus core cryptokit
-   cstruct async_kernel.eager_deferred core_kernel.iobuf pbkdf
+   async_kernel.eager_deferred core_kernel.iobuf kdf.pbkdf
    postgres_async_protocol)
  (preprocess
   (pps ppx_jane)))

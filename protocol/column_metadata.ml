@@ -2,7 +2,7 @@ open! Core
 
 type t =
   { name : string
-  ; format : [ `Text ]
+  ; format : Types.Format.t
   ; pg_type_oid : int
   }
 [@@deriving fields ~getters ~iterators:create, sexp_of]

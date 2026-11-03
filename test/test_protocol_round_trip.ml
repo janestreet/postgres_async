@@ -239,6 +239,67 @@ let%expect_test "SASL response password message" =
   Deferred.unit
 ;;
 
+let test_bind () =
+  let write writer =
+    Protocol.Frontend.Writer.bind
+      writer
+      { destination = Protocol.Portal_name.unnamed
+      ; statement = Protocol.Statement_name.unnamed
+      ; parameters = [| Some "x"; None |]
+      }
+  in
+  roundtrip ~write ~read:(fun iobuf ->
+    Iobuf.Consume.stringo iobuf |> String.Hexdump.to_string_hum |> print_endline)
+;;
+
+let test_bind_with_result_formats result_formats =
+  let write writer =
+    Protocol.Frontend.Writer.bind_with_result_formats
+      writer
+      { destination = Protocol.Portal_name.unnamed
+      ; statement = Protocol.Statement_name.unnamed
+      ; parameters = [| Some "x"; None |]
+      ; result_formats
+      }
+  in
+  roundtrip ~write ~read:(fun iobuf ->
+    Iobuf.Consume.stringo iobuf |> String.Hexdump.to_string_hum |> print_endline)
+;;
+
+let%expect_test "Bind with the default text result format" =
+  let%bind () = test_bind () in
+  [%expect
+    {|
+    00000000  42 00 00 00 19 00 00 00  01 00 00 00 02 00 00 00  |B...............|
+    00000010  01 78 ff ff ff ff 00 01  00 00                    |.x........|
+    |}];
+  Deferred.unit
+;;
+
+let%expect_test "Bind with mixed result formats" =
+  let%bind () =
+    test_bind_with_result_formats (Iarray.of_list [ Protocol.Format.Text; Binary ])
+  in
+  [%expect
+    {|
+    00000000  42 00 00 00 1b 00 00 00  01 00 00 00 02 00 00 00  |B...............|
+    00000010  01 78 ff ff ff ff 00 02  00 00 00 01              |.x..........|
+    |}];
+  Deferred.unit
+;;
+
+let%expect_test "Bind compresses uniform binary result formats" =
+  let%bind () =
+    test_bind_with_result_formats (Iarray.of_list [ Protocol.Format.Binary; Binary ])
+  in
+  [%expect
+    {|
+    00000000  42 00 00 00 19 00 00 00  01 00 00 00 02 00 00 00  |B...............|
+    00000010  01 78 ff ff ff ff 00 01  00 01                    |.x........|
+    |}];
+  Deferred.unit
+;;
+
 let%expect_test "Authentication Request message " =
   let run sent =
     let write writer = Protocol.Backend.Writer.auth_message writer sent in
@@ -418,6 +479,41 @@ let%expect_test "Error Response " =
   Deferred.unit
 ;;
 
+let row_description_iobuf fields =
+  let iobuf = Iobuf.create ~len:256 in
+  Iobuf.Fill.int16_be_trunc iobuf (List.length fields);
+  List.iter fields ~f:(fun (name, pg_type_oid, format) ->
+    Iobuf.Fill.stringo iobuf name;
+    Iobuf.Fill.char iobuf '\000';
+    Iobuf.Fill.int32_be_trunc iobuf 0;
+    Iobuf.Fill.int16_be_trunc iobuf 0;
+    Iobuf.Fill.int32_be_trunc iobuf pg_type_oid;
+    Iobuf.Fill.int16_be_trunc iobuf (-1);
+    Iobuf.Fill.int32_be_trunc iobuf (-1);
+    Iobuf.Fill.int16_be_trunc iobuf format);
+  Iobuf.flip_lo iobuf;
+  iobuf
+;;
+
+let%expect_test "Row Description with mixed formats" =
+  let iobuf = row_description_iobuf [ "text", 25, 0; "bytes", 17, 1 ] in
+  let columns = Protocol.Backend.RowDescription.consume iobuf |> Or_error.ok_exn in
+  print_s [%sexp (columns : Protocol.Column_metadata.t iarray)];
+  Iarray.iter columns ~f:(fun column ->
+    let name = Protocol.Column_metadata.name column in
+    let pg_type_oid = Protocol.Column_metadata.pg_type_oid column in
+    let format = Protocol.Column_metadata.format column in
+    print_s [%message (name : string) (pg_type_oid : int) (format : Protocol.Format.t)]);
+  [%expect
+    {|
+    (((name text) (format Text) (pg_type_oid 25))
+     ((name bytes) (format Binary) (pg_type_oid 17)))
+    ((name text) (pg_type_oid 25) (format Text))
+    ((name bytes) (pg_type_oid 17) (format Binary))
+    |}];
+  Deferred.unit
+;;
+
 let%expect_test "Data Row" =
   let write writer =
     Protocol.Backend.Writer.data_row
@@ -569,4 +665,12 @@ let%expect_test "Query" =
     "SELECT * FROM a; SELECT * FROM a;"
     |}];
   Deferred.unit
+;;
+
+let%test_unit "find_null_exn handles a missing terminator" =
+  List.iter [ ""; "not terminated" ] ~f:(fun string ->
+    match Protocol.Shared.find_null_exn (Iobuf.of_string string) with
+    | exception Failure message ->
+      [%test_result: string] message ~expect:"find_null_exn could not find \\x00"
+    | _ -> failwith "find_null_exn should reject a missing terminator")
 ;;

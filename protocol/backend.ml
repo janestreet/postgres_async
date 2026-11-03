@@ -235,7 +235,7 @@ module ErrorResponse = struct
     | t -> Ok t
   ;;
 
-  let message_type_char = Some 'E'
+  let message_type_char = This 'E'
   let validate_exn (_ : t) = ()
 
   let fill { error_code; all_fields } iobuf =
@@ -251,7 +251,7 @@ end
 module NoticeResponse = struct
   include Error_or_Notice
 
-  let message_type_char = Some 'N'
+  let message_type_char = This 'N'
   let validate_exn (_ : t) = ()
 
   let consume iobuf =
@@ -325,7 +325,7 @@ module AuthenticationRequest = struct
     | t -> Result.Ok t
   ;;
 
-  let message_type_char = Some 'R'
+  let message_type_char = This 'R'
   let validate_exn (_ : t) = ()
 
   let payload_length t =
@@ -373,7 +373,7 @@ end
 module ParameterDescription = struct
   type t = int array
 
-  let message_type_char = Some 't'
+  let message_type_char = This 't'
 
   let consume_exn iobuf =
     let num_parameters = Iobuf.Consume.uint16_be iobuf in
@@ -418,7 +418,7 @@ module ParameterStatus = struct
     | t -> Ok t
   ;;
 
-  let message_type_char = Some 'S'
+  let message_type_char = This 'S'
   let validate_exn (_ : t) = ()
   let payload_length { key; data } = String.length key + 1 + String.length data + 1
 
@@ -443,7 +443,7 @@ module BackendKeyData = struct
     | t -> Ok t
   ;;
 
-  let message_type_char = Some 'K'
+  let message_type_char = This 'K'
   let validate_exn (_ : t) = ()
   let payload_length _t = 8
 
@@ -461,7 +461,7 @@ module NotificationResponse = struct
     }
   [@@deriving sexp_of]
 
-  let message_type_char = Some 'A'
+  let message_type_char = This 'A'
   let validate_exn (_ : t) = ()
 
   let consume_exn iobuf =
@@ -521,7 +521,7 @@ module ReadyForQuery = struct
     | t -> Ok t
   ;;
 
-  let message_type_char = Some 'Z'
+  let message_type_char = This 'Z'
   let validate_exn (_ : t) = ()
   let payload_length _t = 1
 
@@ -578,10 +578,10 @@ module RowDescription = struct
         + 2
       in
       Iobuf.advance iobuf skip;
-      let format =
+      let format : Types.Format.t =
         match Iobuf.Consume.int16_be iobuf with
-        | 0 -> `Text
-        | 1 -> failwith "RowDescription format=Binary?"
+        | 0 -> Text
+        | 1 -> Binary
         | i -> failwithf "RowDescription: bad format %i" i ()
       in
       Column_metadata.create ~name ~format ~pg_type_oid)
@@ -612,7 +612,7 @@ module DataRow = struct
   ;;
 
   let skip iobuf = Iobuf.advance iobuf (Iobuf.length iobuf)
-  let message_type_char = Some 'D'
+  let message_type_char = This 'D'
   let validate_exn (_ : t) = ()
 
   let payload_length t =
@@ -722,7 +722,7 @@ module CommandComplete = struct
     | t -> Ok t
   ;;
 
-  let message_type_char = Some 'C'
+  let message_type_char = This 'C'
   let validate_exn (_ : t) = ()
   let payload_length t = String.length t + 1
   let fill string iobuf = Shared.fill_null_terminated iobuf string
