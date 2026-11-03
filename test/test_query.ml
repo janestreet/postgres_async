@@ -174,6 +174,64 @@ let%expect_test "reading raw iobufs" =
     return ())
 ;;
 
+let binary_bytea_result_format pg_type_oid : Postgres_async.Types.Format.t =
+  if Int.equal pg_type_oid Postgres_oids.bytea then Binary else Text
+;;
+
+let print_zero_copy_columns columns =
+  let columns =
+    Iarray.map columns ~f:(fun column ->
+      ( Postgres_async.Column_metadata.name column
+      , Postgres_async.Column_metadata.pg_type_oid column
+      , Postgres_async.Column_metadata.format column ))
+  in
+  print_s [%message (columns : (string * int * Postgres_async.Types.Format.t) iarray)]
+;;
+
+let print_zero_copy_row row =
+  let values =
+    Postgres_async.Row_handle.foldi row ~init:[] ~f:(fun ~column ~value values ->
+      let value =
+        match value with
+        | Null -> None
+        | This iobuf -> Some (Iobuf.Peek.To_string.subo iobuf)
+      in
+      ( Postgres_async.Column_metadata.name column
+      , Postgres_async.Column_metadata.format column
+      , value )
+      :: values)
+    |> List.rev
+  in
+  print_s
+    [%message (values : (string * Postgres_async.Types.Format.t * string option) list)]
+;;
+
+let%expect_test "mixed zero-copy result formats, including zero rows" =
+  with_connection_exn (fun postgres ->
+    let run query =
+      Postgres_async.query_zero_copy
+        postgres
+        ~result_format_for_oid:binary_bytea_result_format
+        ~handle_columns:print_zero_copy_columns
+        query
+        ~handle_row:print_zero_copy_row
+      >>| ok_exn
+    in
+    let%bind () =
+      run "SELECT 42::int4 AS n, decode('00ff', 'hex') AS b, NULL::text AS z"
+    in
+    [%expect
+      {|
+      (columns ((n 23 Text) (b 17 Binary) (z 25 Text)))
+      (values ((n Text (42)) (b Binary ("\000\255")) (z Text ())))
+      |}];
+    let%bind () =
+      run "SELECT 42::int4 AS n, decode('00ff', 'hex') AS b, NULL::text AS z WHERE false"
+    in
+    [%expect {| (columns ((n 23 Text) (b 17 Binary) (z 25 Text))) |}];
+    return ())
+;;
+
 let%expect_test "parameters" =
   with_connection_exn (fun postgres ->
     let query_exn = query_exn postgres in
@@ -226,6 +284,48 @@ let%expect_test "empty query" =
   with_connection_exn (fun postgres ->
     Deferred.List.iter ~how:`Sequential [ ""; "-- comment" ] ~f:(fun str ->
       query_exn postgres str))
+;;
+
+let%expect_test "two-phase no-data, empty-query, and COPY behavior" =
+  with_connection_exn (fun postgres ->
+    let query query_string =
+      match%bind
+        Postgres_async.query_zero_copy
+          postgres
+          ~result_format_for_oid:binary_bytea_result_format
+          query_string
+          ~handle_row:print_zero_copy_row
+      with
+      | Ok () ->
+        print_endline "OK";
+        return ()
+      | Error error ->
+        Utils.delete_unstable_bits_of_error (Error.sexp_of_t error) |> print_s;
+        return ()
+    in
+    let%bind () = query "CREATE TEMPORARY TABLE mixed_formats_copy (x int)" in
+    [%expect {| OK |}];
+    let%bind () = query "" in
+    [%expect {| OK |}];
+    let%bind () = query "COPY mixed_formats_copy FROM STDIN" in
+    [%expect
+      {|
+      ((query "COPY mixed_formats_copy FROM STDIN")
+       "COPY FROM STDIN is not appropriate for [Postgres_async.query]")
+      |}];
+    let%bind () = query "COPY mixed_formats_copy TO STDOUT" in
+    [%expect
+      {|
+      ((query "COPY mixed_formats_copy TO STDOUT")
+       "COPY TO STDOUT is not appropriate for [Postgres_async.query]")
+      |}];
+    let%bind () = query "SELECT 1" in
+    [%expect
+      {|
+      (values ((?column? Text (1))))
+      OK
+      |}];
+    return ())
 ;;
 
 let%expect_test "failures are reported gracefully and don't kill the connection" =
@@ -336,6 +436,72 @@ let%expect_test "failures are reported gracefully and don't kill the connection"
       (row ((20)))
       OK
       |}];
+    return ())
+;;
+
+let%expect_test "two-phase query errors preserve connection reuse" =
+  with_connection_exn (fun postgres ->
+    let query ?parameters query_string =
+      match%bind
+        Postgres_async.query_zero_copy
+          postgres
+          ?parameters
+          ~result_format_for_oid:binary_bytea_result_format
+          query_string
+          ~handle_row:print_zero_copy_row
+      with
+      | Ok () ->
+        print_endline "OK";
+        return ()
+      | Error error ->
+        Utils.delete_unstable_bits_of_error (Error.sexp_of_t error) |> print_s;
+        return ()
+    in
+    let%bind () = query "syntactically invalid" in
+    [%expect
+      {|
+      ((query "syntactically invalid")
+       ("Postgres Server Error (state=Parsing_statement)" ((Code 42601))))
+      |}];
+    let%bind () = query "SELECT 1" in
+    [%expect
+      {|
+      (values ((?column? Text (1))))
+      OK
+      |}];
+    let%bind () = query "SELECT $1::int" ~parameters:[| Some "a" |] in
+    [%expect
+      {|
+      (((query "SELECT $1::int") (parameters ((a))))
+       ("Postgres Server Error (state=Binding)" ((Code 22P02))))
+      |}];
+    let%bind () = query "SELECT decode('ff', 'hex') AS bytes" in
+    [%expect
+      {|
+      (values ((bytes Binary ("\255"))))
+      OK
+      |}];
+    return ())
+;;
+
+let%expect_test "two-phase queries preserve explicit transactions" =
+  with_connection_exn (fun postgres ->
+    let query query_string =
+      Postgres_async.query_zero_copy
+        postgres
+        ~result_format_for_oid:binary_bytea_result_format
+        query_string
+        ~handle_row:print_zero_copy_row
+      >>| ok_exn
+    in
+    let%bind () = query "CREATE TEMPORARY TABLE mixed_formats_transaction (x int)" in
+    let%bind () = query "BEGIN" in
+    let%bind () = query "INSERT INTO mixed_formats_transaction VALUES (1)" in
+    let%bind () = query "SELECT x FROM mixed_formats_transaction" in
+    [%expect {| (values ((x Text (1)))) |}];
+    let%bind () = query "ROLLBACK" in
+    let%bind () = query "SELECT count(*) FROM mixed_formats_transaction" in
+    [%expect {| (values ((count Text (0)))) |}];
     return ())
 ;;
 
@@ -570,7 +736,7 @@ let%expect_test "insane number of parameters" =
       return ())
 ;;
 
-let%expect_test "query terminated mid execution" =
+let query_terminated_mid_execution ~run_query =
   with_connection_exn (fun postgres ->
     let%bind backend_pid = Utils.pg_backend_pid postgres in
     let%bind () = make_very_large_table_x postgres in
@@ -578,10 +744,10 @@ let%expect_test "query terminated mid execution" =
     let reached_10000_rows = Ivar.create () in
     let ok_to_proceed_past_10000_rows = Ivar.create () in
     let query_done_deferred =
-      Postgres_async.query
+      run_query
         postgres
         "SELECT y, z FROM x ORDER BY y"
-        ~handle_row:(fun ~column_names:_ ~values:_ -> incr rows_handled)
+        ~handle_row:(fun () -> incr rows_handled)
         ~pushback:(fun () ->
           match !rows_handled > 10000 with
           | false -> return ()
@@ -597,7 +763,6 @@ let%expect_test "query terminated mid execution" =
           "SELECT pg_cancel_backend($1)"
           ~parameters:[| Some backend_pid |])
     in
-    [%expect {| ((t)) |}];
     Ivar.fill_exn ok_to_proceed_past_10000_rows ();
     let%bind () =
       match%bind query_done_deferred with
@@ -607,17 +772,55 @@ let%expect_test "query terminated mid execution" =
         print_s [%message "Error" ~_:(err : Sexp.t)];
         return ()
     in
-    [%expect
-      {|
-      (Error
-       ((query "SELECT y, z FROM x ORDER BY y")
-        ("Error during query execution (despite parsing ok)" ((Code 57014)))))
-      |}];
     assert (!rows_handled < 50000);
     (* note that the connection remains healthy. *)
-    let%bind () = query_exn postgres "SELECT 1" in
-    [%expect {| ((1)) |}];
+    let%bind () = query_exn postgres ~zero_copy:false "SELECT 1" in
     return ())
+;;
+
+let%expect_test "query terminated mid execution" =
+  let%bind () =
+    query_terminated_mid_execution ~run_query:(fun postgres query ~handle_row ~pushback ->
+      Postgres_async.query
+        postgres
+        query
+        ~handle_row:(fun ~column_names:_ ~values:_ -> handle_row ())
+        ~pushback)
+  in
+  [%expect
+    {|
+    ((t))
+
+    (Error
+     ((query "SELECT y, z FROM x ORDER BY y")
+      ("Error during query execution (despite parsing ok)" ((Code 57014)))))
+    ((1))
+    |}];
+  return ()
+;;
+
+let%expect_test "two-phase zero-copy query terminated mid execution" =
+  let%bind () =
+    query_terminated_mid_execution ~run_query:(fun postgres query ~handle_row ~pushback ->
+      Postgres_async.query_zero_copy
+        postgres
+        ~result_format_for_oid:binary_bytea_result_format
+        query
+        ~handle_row:(fun row ->
+          Postgres_async.Row_handle.iteri row ~f:(fun ~column:_ ~value:_ -> ());
+          handle_row ())
+        ~pushback)
+  in
+  [%expect
+    {|
+    ((t))
+
+    (Error
+     ((query "SELECT y, z FROM x ORDER BY y")
+      ("Error during query execution (despite parsing ok)" ((Code 57014)))))
+    ((1))
+    |}];
+  return ()
 ;;
 
 let%expect_test "the handle_column callback" =
@@ -700,6 +903,34 @@ let%expect_test "the handle_column callback" =
     return ())
 ;;
 
+let%expect_test "result format selector raising prevents execution" =
+  with_connection_exn (fun postgres ->
+    let%bind () = query_exn postgres "CREATE TEMPORARY TABLE selector_failure (x int)" in
+    let%bind result =
+      Monitor.try_with (fun () ->
+        Postgres_async.query_zero_copy
+          postgres
+          ~result_format_for_oid:(fun (_ : int) ->
+            raise_s [%message "Intentionally raising in result_format_for_oid"])
+          "INSERT INTO selector_failure VALUES (1) RETURNING x"
+          ~handle_row:(fun _ -> ())
+        >>| ok_exn)
+    in
+    (match result with
+     | Ok () -> raise_s [%message "Unexpected success"]
+     | Error exn -> print_s [%message "Got expected exn" (exn : exn)]);
+    [%expect
+      {|
+      ("Got expected exn"
+       (exn
+        (monitor.ml.Error "Intentionally raising in result_format_for_oid"
+         ("<backtrace elided in test>"))))
+      |}];
+    let%bind () = query_exn postgres "SELECT count(*) FROM selector_failure" in
+    [%expect {| ((0)) |}];
+    return ())
+;;
+
 let%expect_test "handle_column raising prevents any call to handle_row" =
   with_connection_exn (fun postgres ->
     let%bind result =
@@ -723,4 +954,34 @@ let%expect_test "handle_column raising prevents any call to handle_row" =
            ("<backtrace elided in test>"))))
         |}];
       return ())
+;;
+
+let%expect_test "Postgres_oids matches the server's pg_type catalog" =
+  with_connection_exn (fun postgres ->
+    let expected = Postgres_oids.all_by_typname in
+    let typnames = List.map expected ~f:fst |> String.concat ~sep:"," |> sprintf "{%s}" in
+    let server_oids = Hashtbl.create (module String) in
+    let%bind () =
+      Postgres_async.query
+        postgres
+        "SELECT typname, oid FROM pg_type WHERE typname = ANY($1::name[])"
+        ~parameters:[| Some typnames |]
+        ~handle_row:(fun ~column_names:_ ~values ->
+          let typname = Iarray.get values 0 |> Option.value_exn in
+          let oid = Iarray.get values 1 |> Option.value_exn |> Int.of_string in
+          Hashtbl.set server_oids ~key:typname ~data:oid)
+      >>| ok_exn
+    in
+    List.iter expected ~f:(fun (typname, expected_oid) ->
+      match Hashtbl.find server_oids typname with
+      | None -> print_s [%message "typname not found in pg_type" (typname : string)]
+      | Some server_oid ->
+        if server_oid <> expected_oid
+        then
+          print_s
+            [%message
+              "oid mismatch" (typname : string) (expected_oid : int) (server_oid : int)]);
+    printf "verified %d built-in type oids against pg_type\n" (List.length expected);
+    [%expect {| verified 22 built-in type oids against pg_type |}];
+    return ())
 ;;

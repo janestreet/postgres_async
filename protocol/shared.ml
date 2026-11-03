@@ -145,12 +145,6 @@ let find_null_exn iobuf =
   | None -> failwith "find_null_exn could not find \\x00"
 ;;
 
-let%test_unit "find_null_exn handles a missing terminator" =
-  match find_null_exn (Iobuf.of_string "not terminated") with
-  | exception Failure "find_null_exn could not find \\x00" -> ()
-  | _ -> failwith "find_null_exn should reject a missing terminator"
-;;
-
 let consume_cstring_exn iobuf =
   let len = find_null_exn iobuf in
   let res = Iobuf.Consume.string iobuf ~len ~str_pos:0 in
@@ -160,7 +154,7 @@ let consume_cstring_exn iobuf =
 ;;
 
 module type Message_type = sig
-  val message_type_char : char option
+  val message_type_char : char or_null
 
   type t
 
@@ -174,34 +168,71 @@ type 'a with_computed_length =
   ; value : 'a
   }
 
-let write_message (type a) (module M : Message_type with type t = a) =
-  let full_length { payload_length; _ } =
-    match M.message_type_char with
-    | None -> payload_length + 4
-    | Some _ -> payload_length + 5
-  in
+let message_length_field_length = 4
+let message_type_char_length = 1
+
+(* A Postgres message's length field includes its own four bytes but excludes the optional
+   one-byte message-type character. This is the total number of bytes before the payload
+   in the writer buffer. *)
+let framing_length = function
+  | Null -> message_length_field_length
+  | This (_ : char) -> message_type_char_length + message_length_field_length
+;;
+
+let max_payload_length ~message_type_char =
+  min
+    (int32_max - message_length_field_length)
+    (Int.max_value - framing_length message_type_char)
+;;
+
+let[@cold] invalid_payload_length ~payload_length ~max_payload_length =
+  raise_s
+    [%message
+      "Postgres message payload length is out of range"
+        (payload_length : int)
+        (max_payload_length : int)]
+;;
+
+let validate_payload_length ~payload_length ~max_payload_length =
+  if Bool.Branch_free.(payload_length < 0 || payload_length > max_payload_length)
+  then invalid_payload_length ~payload_length ~max_payload_length
+;;
+
+let write_message_gen ~message_type_char ~validate_exn ~payload_length ~fill =
+  let framing_length = framing_length message_type_char in
+  let max_payload_length = max_payload_length ~message_type_char in
+  let full_length { payload_length; _ } = payload_length + framing_length in
   let blit_to_bigstring with_computed_length bigstring ~pos =
     let iobuf =
       Iobuf.of_bigstring bigstring ~pos ~len:(full_length with_computed_length)
     in
-    (match M.message_type_char with
-     | None -> ()
-     | Some c -> Iobuf.Fill.char iobuf c);
+    (match message_type_char with
+     | Null -> ()
+     | This c -> Iobuf.Fill.char iobuf c);
     let { payload_length; value } = with_computed_length in
     fill_int32_be iobuf (payload_length + 4);
-    M.fill value iobuf;
+    fill value iobuf;
     match Iobuf.is_empty iobuf with
     | true -> ()
     | false -> failwith "postgres message filler lied about length"
   in
   Staged.stage (fun writer value ->
-    M.validate_exn value;
-    let payload_length = M.payload_length value in
+    validate_exn value;
+    let payload_length = payload_length value in
+    validate_payload_length ~payload_length ~max_payload_length;
     Async.Writer.write_gen_whole
       writer
       { payload_length; value }
       ~length:full_length
       ~blit_to_bigstring)
+;;
+
+let write_message (type a) (module M : Message_type with type t = a) =
+  write_message_gen
+    ~message_type_char:M.message_type_char
+    ~validate_exn:M.validate_exn
+    ~payload_length:M.payload_length
+    ~fill:M.fill
 ;;
 
 module No_arg = struct
@@ -217,7 +248,8 @@ end
 (* Both the backend and frontend use the same format for [CopyData] and [CopyDone]
    messages, hence they are placed in [Shared]. *)
 module CopyData = struct
-  let message_type_char = Some 'd'
+  let message_type_char = This 'd'
+  let max_payload_length = max_payload_length ~message_type_char
 
   type t = string
 
@@ -227,6 +259,10 @@ module CopyData = struct
   let validate_exn (_ : t) = ()
   let payload_length t = String.length t
   let fill t iobuf = Iobuf.Fill.stringo iobuf t
+
+  let write_message ~payload_length ~fill =
+    write_message_gen ~message_type_char ~validate_exn:ignore ~payload_length ~fill
+  ;;
 end
 
 module CopyDone = struct

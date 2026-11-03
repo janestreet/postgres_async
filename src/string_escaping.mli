@@ -1,10 +1,15 @@
 open! Core
 
 module Copy_in : sig
+  type format =
+    | Text
+    | Binary
+
   (** Note that [schema_name], [table_name], and [column_names] must be escaped before
       calling [query]. *)
   val query
     :  ?schema_name:string
+    -> ?format:format (** Default is [Text]. *)
     -> table_name:string
     -> column_names:string list
     -> unit

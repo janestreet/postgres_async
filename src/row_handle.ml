@@ -28,7 +28,7 @@ module Private = struct
           "number of columns in DataRow message did not match RowDescription"
             ~row_description:(columns : Column_metadata.t iarray)
             (num_fields : int)]
-    else { columns; datarow = Iobuf.read_only__local datarow; last_function = Create }
+    else { columns; datarow = Iobuf.read_only datarow; last_function = Create }
   ;;
 end
 
@@ -45,7 +45,7 @@ let unchecked_next
     let hi_bound = Iobuf.Hi_bound.window datarow in
     (* Narrow the window to just this one column. *)
     Iobuf.resize datarow ~len;
-    let result = f (This (Iobuf.no_seek__local datarow)) in
+    let result = f (This (Iobuf.no_seek datarow)) in
     Iobuf.bounded_flip_hi datarow hi_bound;
     (* Set the window to begin at the next column's length and end at the end of the row. *)
     result)
@@ -74,7 +74,7 @@ let next t ~(f : (read, no_seek, Iobuf.global) Iobuf.t or_null -> _) =
          (* Narrow the window to just this one column. *)
          Iobuf.resize t.datarow ~len;
          Exn.protect
-           ~f:(fun () -> f (This (Iobuf.no_seek__local t.datarow)) [@nontail])
+           ~f:(fun () -> f (This (Iobuf.no_seek t.datarow)) [@nontail])
            ~finally:(fun () -> Iobuf.bounded_flip_hi t.datarow hi_bound)))
 ;;
 

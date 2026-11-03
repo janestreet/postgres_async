@@ -111,6 +111,17 @@ module Bind : sig
     }
 end
 
+module Bind_with_result_formats : sig
+  type t =
+    { destination : Types.Portal_name.t
+    ; statement : Types.Statement_name.t
+    ; parameters : string option array
+    ; result_formats : Types.Format.t iarray
+    (** Empty means all text. Uniform formats are encoded as one format code; mixed
+        formats are encoded per column. *)
+    }
+end
+
 module Execute : sig
   type num_rows =
     | Unlimited
@@ -161,6 +172,7 @@ module Writer : sig
   val password_message : Writer.t -> PasswordMessage.t -> unit
   val parse : Writer.t -> Parse.t -> unit
   val bind : Writer.t -> Bind.t -> unit
+  val bind_with_result_formats : Writer.t -> Bind_with_result_formats.t -> unit
   val close : Writer.t -> Close.t -> unit
   val query : Writer.t -> Query.t -> unit
   val describe : Writer.t -> Describe.t -> unit

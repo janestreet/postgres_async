@@ -1,11 +1,13 @@
 open Core
 open! Int.Replace_polymorphic_compare
 
+let escape_identifier_part s =
+  let escaped = String.substr_replace_all s ~pattern:"\"" ~with_:"\"\"" in
+  [%string.stack {|"%{escaped}"|}]
+;;
+
 let escape_identifier s =
-  String.split s ~on:'.'
-  |> List.map ~f:(fun s ->
-    "\"" ^ String.substr_replace_all s ~pattern:"\"" ~with_:"\"\"" ^ "\"")
-  |> String.concat ~sep:"."
+  String.split s ~on:'.' |> List.map ~f:escape_identifier_part |> String.concat ~sep:"."
 ;;
 
 (* temporary escape hatch in case we break someone's code *)
@@ -14,7 +16,11 @@ let quote_table_name_requested =
 ;;
 
 module Copy_in = struct
-  let query ?schema_name ~table_name ~column_names () =
+  type format =
+    | Text
+    | Binary
+
+  let query ?schema_name ?(format = Text) ~table_name ~column_names () =
     let column_names =
       (if Lazy.force quote_table_name_requested
        then List.map column_names ~f:escape_identifier
@@ -29,10 +35,20 @@ module Copy_in = struct
     let table_name =
       match schema_name with
       | None -> table_name
-      | Some schema -> schema ^ "." ^ table_name
+      | Some schema ->
+        let schema =
+          if Lazy.force quote_table_name_requested
+          then escape_identifier_part schema
+          else schema
+        in
+        [%string.stack "%{schema}.%{table_name}"]
     in
-    [%string
-      "COPY %{table_name} ( %{column_names} ) FROM STDIN ( FORMAT text,  DELIMITER '\t')"]
+    let format =
+      match format with
+      | Text -> "FORMAT text, DELIMITER '\t'"
+      | Binary -> "FORMAT binary"
+    in
+    [%string "COPY %{table_name} ( %{column_names} ) FROM STDIN ( %{format} )"]
   ;;
 
   let special_escape char =
@@ -47,7 +63,7 @@ module Copy_in = struct
   let is_special c = Or_null.is_this (special_escape c)
 
   let row_to_string row =
-    let is_escaped = (Array.create [@alloc stack]) ~len:(Array.length row) false in
+    let is_escaped = Array.create ~len:(Array.length row) false in
     let total_size =
       Array.foldi row ~init:0 ~f:(fun i acc s ->
         match s with
@@ -92,5 +108,5 @@ module Copy_in = struct
 end
 
 module Listen = struct
-  let query ~channel = sprintf !"LISTEN %{escape_identifier}" channel
+  let query ~channel = [%string "LISTEN %{escape_identifier channel}"]
 end

@@ -3,7 +3,7 @@ open! Async
 open! Import
 
 module SSLRequest = struct
-  let message_type_char = None
+  let message_type_char = Null
 
   type t = unit
 
@@ -19,7 +19,7 @@ module SSLRequest = struct
 end
 
 module StartupMessage = struct
-  let message_type_char = None
+  let message_type_char = Null
 
   module Parameter = struct
     module Name = struct
@@ -263,7 +263,7 @@ module StartupMessage = struct
 end
 
 module PasswordMessage = struct
-  let message_type_char = Some 'p'
+  let message_type_char = This 'p'
 
   type t =
     | Cleartext_or_md5_hex of string
@@ -348,7 +348,7 @@ module PasswordMessage = struct
 end
 
 module Parse = struct
-  let message_type_char = Some 'P'
+  let message_type_char = This 'P'
 
   type t =
     { destination : Types.Statement_name.t
@@ -373,8 +373,84 @@ module Parse = struct
   ;;
 end
 
+module Bind_payload = struct
+  let text_result_formats = Iarray.of_list [ Types.Format.Text ]
+
+  let format_code : Types.Format.t -> int = function
+    | Text -> 0
+    | Binary -> 1
+  ;;
+
+  let num_result_format_codes result_formats =
+    match Iarray.length result_formats with
+    | 0 -> 0
+    | 1 -> 1
+    | num_formats ->
+      let first = Iarray.get result_formats 0 in
+      if Iarray.fold result_formats ~init:true ~f:(fun all_equal format ->
+           all_equal
+           &&
+           match (first : Types.Format.t), format with
+           | Text, Text | Binary, Binary -> true
+           | Text, Binary | Binary, Text -> false)
+      then 1
+      else num_formats
+  ;;
+
+  let payload_length ~destination ~statement ~parameters ~result_formats =
+    let parameter_length = function
+      | None -> 0
+      | Some s -> String.length s
+    in
+    (* destination and terminator *)
+    String.length (Types.Portal_name.to_string destination)
+    + 1
+    (* statement and terminator *)
+    + String.length (Types.Statement_name.to_string statement)
+    + 1
+    (* # parameter format codes = 1: *)
+    + 2
+    (* single parameter format code: *)
+    + 2
+    (* # parameters: *)
+    + 2
+    (* parameter sizes: *)
+    + (4 * Array.length parameters) (* parameters *)
+    + Array.sum (module Int) parameters ~f:parameter_length
+    (* # result format codes: *)
+    + 2
+    (* result format codes: *)
+    + (2 * num_result_format_codes result_formats)
+  ;;
+
+  let fill iobuf ~destination ~statement ~parameters ~result_formats =
+    Shared.fill_null_terminated iobuf (Types.Portal_name.to_string destination);
+    Shared.fill_null_terminated iobuf (Types.Statement_name.to_string statement);
+    (* 1 parameter format code: *)
+    Iobuf.Fill.int16_be_trunc iobuf 1;
+    (* all parameters are text: *)
+    Iobuf.Fill.int16_be_trunc iobuf 0;
+    let num_parameters = Array.length parameters in
+    Shared.fill_uint16_be iobuf num_parameters;
+    for idx = 0 to num_parameters - 1 do
+      match parameters.(idx) with
+      | None -> Shared.fill_int32_be iobuf (-1)
+      | Some str ->
+        Shared.fill_int32_be iobuf (String.length str);
+        Iobuf.Fill.stringo iobuf str
+    done;
+    let num_result_format_codes = num_result_format_codes result_formats in
+    Shared.fill_uint16_be iobuf num_result_format_codes;
+    if num_result_format_codes = 1
+    then Iobuf.Fill.int16_be_trunc iobuf (format_code (Iarray.get result_formats 0))
+    else
+      Iarray.iter result_formats ~f:(fun format ->
+        Iobuf.Fill.int16_be_trunc iobuf (format_code format))
+  ;;
+end
+
 module Bind = struct
-  let message_type_char = Some 'B'
+  let message_type_char = This 'B'
 
   type t =
     { destination : Types.Portal_name.t
@@ -384,57 +460,47 @@ module Bind = struct
 
   let validate_exn (_ : t) = ()
 
-  let payload_length t =
-    let parameter_length = function
-      | None -> 0
-      | Some s -> String.length s
-    in
-    (* destination and terminator *)
-    String.length (Types.Portal_name.to_string t.destination)
-    + 1
-    (* statement and terminator *)
-    + String.length (Types.Statement_name.to_string t.statement)
-    + 1
-    (* # parameter format codes = 1: *)
-    + 2
-    (* single parameter format code: *)
-    + 2
-    (* # parameters: *)
-    + 2
-    (* parameter sizes: *)
-    + (4 * Array.length t.parameters) (* parameters *)
-    + Array.sum (module Int) t.parameters ~f:parameter_length
-    (* # result format codes = 1: *)
-    + 2
-    (* single result format code: *)
-    + 2
+  let payload_length { destination; statement; parameters } =
+    Bind_payload.payload_length
+      ~destination
+      ~statement
+      ~parameters
+      ~result_formats:Bind_payload.text_result_formats
   ;;
 
-  let fill t iobuf =
-    Shared.fill_null_terminated iobuf (Types.Portal_name.to_string t.destination);
-    Shared.fill_null_terminated iobuf (Types.Statement_name.to_string t.statement);
-    (* 1 parameter format code: *)
-    Iobuf.Fill.int16_be_trunc iobuf 1;
-    (* all parameters are text: *)
-    Iobuf.Fill.int16_be_trunc iobuf 0;
-    let num_parameters = Array.length t.parameters in
-    Shared.fill_uint16_be iobuf num_parameters;
-    for idx = 0 to num_parameters - 1 do
-      match t.parameters.(idx) with
-      | None -> Shared.fill_int32_be iobuf (-1)
-      | Some str ->
-        Shared.fill_int32_be iobuf (String.length str);
-        Iobuf.Fill.stringo iobuf str
-    done;
-    (* 1 result format code: *)
-    Iobuf.Fill.int16_be_trunc iobuf 1;
-    (* all results are text: *)
-    Iobuf.Fill.int16_be_trunc iobuf 0
+  let fill { destination; statement; parameters } iobuf =
+    Bind_payload.fill
+      iobuf
+      ~destination
+      ~statement
+      ~parameters
+      ~result_formats:Bind_payload.text_result_formats
+  ;;
+end
+
+module Bind_with_result_formats = struct
+  let message_type_char = This 'B'
+
+  type t =
+    { destination : Types.Portal_name.t
+    ; statement : Types.Statement_name.t
+    ; parameters : string option array
+    ; result_formats : Types.Format.t iarray
+    }
+
+  let validate_exn (_ : t) = ()
+
+  let payload_length { destination; statement; parameters; result_formats } =
+    Bind_payload.payload_length ~destination ~statement ~parameters ~result_formats
+  ;;
+
+  let fill { destination; statement; parameters; result_formats } iobuf =
+    Bind_payload.fill iobuf ~destination ~statement ~parameters ~result_formats
   ;;
 end
 
 module Execute = struct
-  let message_type_char = Some 'E'
+  let message_type_char = This 'E'
 
   type num_rows =
     | Unlimited
@@ -492,19 +558,19 @@ module Statement_or_portal_action = struct
 end
 
 module Describe = struct
-  let message_type_char = Some 'D'
+  let message_type_char = This 'D'
 
   include Statement_or_portal_action
 end
 
 module Close = struct
-  let message_type_char = Some 'C'
+  let message_type_char = This 'C'
 
   include Statement_or_portal_action
 end
 
 module CopyFail = struct
-  let message_type_char = Some 'f'
+  let message_type_char = This 'f'
 
   type t = { reason : string }
 
@@ -516,7 +582,7 @@ end
 module Query = struct
   type t = string
 
-  let message_type_char = Some 'Q'
+  let message_type_char = This 'Q'
   let consume_exn = Shared.consume_cstring_exn
 
   let consume iobuf =
@@ -531,7 +597,7 @@ module Query = struct
 end
 
 module CancelRequest = struct
-  let message_type_char = None
+  let message_type_char = Null
 
   type t =
     { pid : int
@@ -593,6 +659,11 @@ module Writer = struct
   let password_message = Staged.unstage (write_message (module PasswordMessage))
   let parse = Staged.unstage (write_message (module Parse))
   let bind = Staged.unstage (write_message (module Bind))
+
+  let bind_with_result_formats =
+    Staged.unstage (write_message (module Bind_with_result_formats))
+  ;;
+
   let close = Staged.unstage (write_message (module Close))
   let query = Staged.unstage (write_message (module Query))
   let describe = Staged.unstage (write_message (module Describe))

@@ -34,3 +34,10 @@ end
 module Statement_name = Named_or_unnamed
 module Portal_name = Named_or_unnamed
 module Notification_channel = String
+
+module Format = struct
+  type t =
+    | Text
+    | Binary
+  [@@deriving sexp_of]
+end

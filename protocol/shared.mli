@@ -43,7 +43,7 @@ val find_null_exn : ([> read ], 'a, Iobuf.global) Iobuf.t -> int
 val consume_cstring_exn : ([> read ], seek, Iobuf.global) Iobuf.t -> string
 
 module type Message_type = sig
-  val message_type_char : char option
+  val message_type_char : char or_null
 
   type t
 
@@ -63,7 +63,14 @@ end
 module CopyData : sig
   include Message_type with type t = string
 
-  val message_type_char : char option
+  val message_type_char : char or_null
+  val max_payload_length : int
+
+  val write_message
+    :  payload_length:('a -> int)
+    -> fill:('a -> (read_write, seek, Iobuf.global) Iobuf.t -> unit)
+    -> (Writer.t -> 'a -> unit) Staged.t
+
   val skip : ([> read ], seek, Iobuf.global) Iobuf.t -> unit
 end
 

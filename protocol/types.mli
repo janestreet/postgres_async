@@ -43,3 +43,10 @@ module Notification_channel : sig
   include Stringable with type t := t
   include Hashable with type t := t
 end
+
+module Format : sig
+  type t =
+    | Text
+    | Binary
+  [@@deriving sexp_of]
+end

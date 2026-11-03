@@ -3,6 +3,7 @@ open! Async
 module Protocol = Postgres_async_protocol
 module Types = Protocol.Types
 module Column_metadata = Protocol.Column_metadata
+module Format = Protocol.Format
 
 module type S = sig
   (** In order to provide an [Expert] interface that uses [Pgasync_error.t] to represent
@@ -45,6 +46,18 @@ module type S = sig
 
   (** [close] returns an error if there were any problems gracefully tearing down the
       connection. For sure, when it is determined, the connection is gone.
+
+      Closing is bounded. The protocol [Terminate] message is sent immediately, and the
+      server is given a short grace period to finish any in-flight query and hang up its
+      end of the connection, after which the socket is torn down regardless. If an
+      in-flight query did not finish within the grace period, [close] returns an error
+      (tearing the connection down also interrupts the query). If the connection was idle
+      but the server merely failed to hang up its end promptly, this counts as a
+      successful close: all traffic on the connection had completed already.
+
+      One exception: an in-flight [copy_in] is abandoned immediately rather than being
+      given the grace period. The backend reads the frontend's stream mid-copy, so it sees
+      the [Terminate] straight away and aborts the copy (rolling back its transaction).
 
       [try_cancel_statement_before_close] defaults to false. If set to true, [close] will
       first attempt to cancel any query in progress on [t] before closing the connection,
@@ -100,7 +113,21 @@ module type S = sig
   val query
     : (column_names:string iarray -> values:string option iarray -> unit) with_query_args
 
-  val query_zero_copy : (Row_handle.t -> unit) with_query_args
+  (** When [result_format_for_oid] is supplied, the query uses an additional protocol
+      round trip to describe the statement before binding it. The selector chooses the
+      result format for each column from its PostgreSQL type OID. This option is useful
+      only for queries that return rows. [handle_columns] receives the authoritative
+      portal metadata, including the formats returned by the server. *)
+
+  val query_zero_copy
+    :  t
+    -> ?parameters:string option array
+    -> ?result_format_for_oid:(int -> Format.t)
+    -> ?pushback:(unit -> unit Deferred.t)
+    -> ?handle_columns:(Column_metadata.t iarray -> unit)
+    -> string
+    -> handle_row:(Row_handle.t -> unit)
+    -> (command_complete, error) Result.t Deferred.t
 
   val query_expect_no_data
     :  t
@@ -119,6 +146,20 @@ module type S = sig
     -> ?parameters:string option array
     -> string
     -> feed_data:(unit -> string feed_data_result)
+    -> (command_complete, error) Result.t Deferred.t
+
+  (** Sends a Postgres binary COPY stream. Each [Data] value represents one complete row,
+      excluding the binary COPY stream header and trailer. [fill_payload] must consume
+      exactly [payload_length row] bytes from its iobuf and must not raise. If it raises
+      after partially filling the writer buffer, the connection is failed. *)
+  val copy_in_binary
+    :  ?schema_name:string
+    -> t
+    -> table_name:string
+    -> column_names:string list
+    -> feed_data:(unit -> 'a feed_data_result)
+    -> payload_length:('a -> int)
+    -> fill_payload:('a -> (read_write, Iobuf.seek, Iobuf.global) Iobuf.t -> unit)
     -> (command_complete, error) Result.t Deferred.t
 
   (** Note that [table_name] and [column_names] must be escaped before calling

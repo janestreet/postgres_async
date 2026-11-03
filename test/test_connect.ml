@@ -41,7 +41,7 @@ let%expect_test "interrupt - TCP" =
         print_s [%sexp (err : Error.t)];
         [%expect
           {|
-          (monitor.ml.Error ("connection attempt aborted" 127.0.0.1:PORT)
+          (monitor.ml.Error ("connection attempt aborted" (127.0.0.1 PORT))
            ("<backtrace elided in test>" "Caught by monitor try_with_or_error"))
           |}];
         return ())
@@ -84,7 +84,7 @@ let%expect_test "interrupt - SSL" =
         print_s [%sexp (err : Error.t)];
         [%expect
           {|
-          (monitor.ml.Error ("connection attempt aborted" 127.0.0.1:PORT)
+          (monitor.ml.Error ("connection attempt aborted" (127.0.0.1 PORT))
            ("<backtrace elided in test>" "Caught by monitor try_with_or_error"))
           |}];
         return ())

@@ -67,6 +67,50 @@ let%expect_test "copy_in_rows" =
     return ())
 ;;
 
+let%expect_test "copy_in_binary" =
+  with_connection_exn (fun postgres ->
+    let%bind () = create_table postgres "x" [ "y integer primary key"; "z text" ] in
+    [%expect {| |}];
+    let rows = Queue.of_list [ 1, "one"; 2, "two"; 3, "three" ] in
+    (* Each row starts with an int16 column count, and each column starts with an int32
+       payload length. *)
+    let number_of_columns = 2 in
+    let row_header_length = 2 in
+    let field_header_length = 4 in
+    let integer_payload_length = 4 in
+    let%bind result =
+      Postgres_async.copy_in_binary
+        postgres
+        ~table_name:"x"
+        ~column_names:[ "y"; "z" ]
+        ~feed_data:(fun () ->
+          match Queue.dequeue rows with
+          | None -> Finished
+          | Some row -> Data row)
+        ~payload_length:(fun (_, text) ->
+          row_header_length
+          + (number_of_columns * field_header_length)
+          + integer_payload_length
+          + String.length text)
+        ~fill_payload:(fun (integer, text) iobuf ->
+          Iobuf.Fill.int16_be_trunc iobuf number_of_columns;
+          Iobuf.Fill.int32_be_trunc iobuf integer_payload_length;
+          Iobuf.Fill.int32_be_trunc iobuf integer;
+          Iobuf.Fill.int32_be_trunc iobuf (String.length text);
+          Iobuf.Fill.stringo iobuf text)
+    in
+    Or_error.ok_exn result;
+    [%expect {| |}];
+    let%bind () = print_table postgres "x" in
+    [%expect
+      {|
+      ((1) (one))
+      ((2) (two))
+      ((3) (three))
+      |}];
+    return ())
+;;
+
 let%expect_test "copy_in_rows, schema" =
   with_connection_exn (fun postgres ->
     let%bind () =

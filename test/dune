@@ -1,7 +1,7 @@
 (library
  (name postgres_async_tests)
  (libraries async async_ssl core core_unix expect_test_helpers_core
-   core_unix.filename_unix core_kernel.iobuf postgres_async
+   core_unix.filename_unix core_kernel.iobuf postgres_async postgres_oids
    core_unix.signal_unix core_unix.sys_unix)
  (preprocess
   (pps ppx_jane)))
